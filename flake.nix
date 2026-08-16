@@ -1,11 +1,16 @@
 {
-  description = "Validated HTTP message values: URIs, header fields, requests, responses, deadlines and conditions.";
+  description = "HTTP message values, HTTP/1 wire codecs, and HTTP/2/3 framing and header compression.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     cl-weave = {
       url = "github:nerima-lisp/cl-weave/v1.3.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    paredit-cli = {
+      url = "github:nerima-lisp/paredit-cli/v1.6.0";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -15,6 +20,7 @@
       self,
       nixpkgs,
       cl-weave,
+      paredit-cli,
       ...
     }:
     let
@@ -36,8 +42,11 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-http-message-kit";
-            version = "0.1.0";
-            src = self;
+            version = "1.0.0";
+            src = builtins.path {
+              path = ./.;
+              name = "cl-http-message-kit-source";
+            };
             dontBuild = true;
             installPhase = ''
               runHook preInstall
@@ -47,7 +56,7 @@
               runHook postInstall
             '';
             meta = {
-              description = "Validated HTTP message values: URIs, header fields, requests, responses, deadlines and conditions";
+              description = "HTTP message values, HTTP/1 wire codecs, and HTTP/2/3 framing and header compression";
               license = pkgs.lib.licenses.mit;
             };
           };
@@ -59,6 +68,7 @@
           default = pkgs.mkShell {
             packages = [
               cl-weave.packages.${system}.default
+              paredit-cli.packages.${system}.default
               pkgs.sbcl
               pkgs.coreutils
               pkgs.perl
@@ -71,18 +81,53 @@
         system: pkgs:
         let
           clWeave = cl-weave.packages.${system}.default;
-          sourceRegistry = "${clWeave}/share/common-lisp/source//";
           test = pkgs.writeShellApplication {
             name = "cl-http-message-kit-test";
             runtimeInputs = [
-              pkgs.sbcl
               clWeave
+              pkgs.coreutils
             ];
             text = ''
-              export CL_SOURCE_REGISTRY="$PWD//:${sourceRegistry}"
-              sbcl --noinform --non-interactive \
-                --eval '(require :asdf)' \
-                --eval '(asdf:test-system "cl-http-message-kit")'
+              export CL_SOURCE_REGISTRY="$PWD//"
+              exec timeout --signal=TERM --kill-after=10s 120s \
+                cl-weave run \
+                --load "$PWD/cl-http-message-kit.asd" \
+                cl-http-message-kit/test \
+                --reporter spec \
+                --fail-with-no-tests \
+                --test-timeout-ms 30000 \
+                --max-workers 1
+            '';
+          };
+          coverage = pkgs.writeShellApplication {
+            name = "cl-http-message-kit-coverage";
+            runtimeInputs = [
+              clWeave
+              pkgs.coreutils
+            ];
+            text = ''
+              export CL_SOURCE_REGISTRY="$PWD//"
+              exec timeout --signal=TERM --kill-after=10s 300s \
+                cl-weave run \
+                --load "$PWD/cl-http-message-kit.asd" \
+                cl-http-message-kit/test \
+                --reporter spec \
+                --fail-with-no-tests \
+                --test-timeout-ms 30000 \
+                --max-workers 1 \
+                --coverage \
+                --coverage-output cl-http-message-kit.coverage \
+                --coverage-report-directory cl-http-message-kit-coverage-report \
+                --coverage-system cl-http-message-kit \
+                --coverage-exclude src/package.lisp \
+                --coverage-exclude src/conditions.lisp \
+                --coverage-exclude src/model-declarations.lisp \
+                --coverage-exclude src/defaults.lisp \
+                --coverage-exclude src/status-registry.lisp \
+                --coverage-exclude src/header-data.lisp \
+                --coverage-exclude src/hpack-data.lisp \
+                --coverage-min-expression 100 \
+                --coverage-min-branch 100
             '';
           };
         in
@@ -90,10 +135,23 @@
           default = {
             type = "app";
             program = "${test}/bin/cl-http-message-kit-test";
+            meta = {
+              description = "Run the cl-http-message-kit test suite.";
+            };
           };
           test = {
             type = "app";
             program = "${test}/bin/cl-http-message-kit-test";
+            meta = {
+              description = "Run the cl-http-message-kit test suite.";
+            };
+          };
+          coverage = {
+            type = "app";
+            program = "${coverage}/bin/cl-http-message-kit-coverage";
+            meta = {
+              description = "Run cl-http-message-kit with coverage gates.";
+            };
           };
         }
       );

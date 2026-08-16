@@ -10,6 +10,17 @@
   trailers
   body)
 
+(defstruct (http-request-stream (:constructor %make-http-request-stream)
+                                (:conc-name %request-stream-))
+  protocol-version
+  method
+  uri
+  target
+  headers
+  trailers
+  body-function
+  body-length)
+
 (defstruct (http-response (:constructor %make-http-response)
                           (:conc-name %response-))
   protocol-version

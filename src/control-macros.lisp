@@ -5,28 +5,11 @@
                            (clock-function #'%monotonic-time)
                            (kind :connect))
      &body body)
-  `(let ((,deadline
-           (http-deadline ,timeout
-                          :deadline ,inherited
-                          :clock-function ,clock-function)))
-     (%check-deadline ,deadline ,clock-function ,kind)
-     ,@body))
-
-(defmacro %with-http-error-translation ((message operation) &body body)
-  `(handler-case
-       (progn ,@body)
-     (http-error (condition)
-       (error condition))
-     (error (condition)
-       (error 'http-connection-error
-              :message ,message
-              :operation ,operation
-              :cause condition))))
-
-(defmacro %with-http-cleanup (&body body)
-  "Run cleanup code without replacing the original failure with a cleanup error."
-  `(handler-case
-       (progn ,@body)
-     (error (condition)
-       (declare (ignore condition))
-       nil))) ; paredit:ignore handler-case-swallows-error -- cleanup must not mask the original condition.
+  (let ((clock (gensym "CLOCK-FUNCTION-")))
+    `(let* ((,clock ,clock-function)
+            (,deadline
+              (http-deadline ,timeout
+                             :deadline ,inherited
+                             :clock-function ,clock)))
+       (%check-deadline ,deadline ,clock ,kind)
+       ,@body)))

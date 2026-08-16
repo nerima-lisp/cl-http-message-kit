@@ -17,6 +17,9 @@
    #:http-header
    #:http-header-p
    #:make-http-header
+   #:http-header-copy
+   #:http-pseudo-header-p
+   #:make-http-pseudo-header
    #:http-header-name
    #:http-header-content
    #:http-header-values
@@ -30,12 +33,25 @@
    #:http-request-method
    #:http-request-uri
    #:http-request-target
+   #:http-request-target-form
    #:http-request-headers
    #:http-request-trailers
    #:http-request-body
    #:http-request-authority
    #:http-request-path
    #:http-request-query
+   #:http-request-stream
+   #:http-request-stream-p
+   #:make-http-request-stream
+   #:http-request-stream-protocol-version
+   #:http-request-stream-method
+   #:http-request-stream-uri
+   #:http-request-stream-target
+   #:http-request-stream-target-form
+   #:http-request-stream-headers
+   #:http-request-stream-trailers
+   #:http-request-stream-body-function
+   #:http-request-stream-body-length
    #:http-response
    #:http-response-p
    #:make-http-response
@@ -55,7 +71,132 @@
    #:http-response-stream-trailers
    #:http-response-stream-body-function
    #:http-response-stream-body-length
+   #:http-body-cps
+   ;; HTTP method metadata
+   #:*http-method-registry*
+   #:http-method-p
+   #:http-method-name
+   #:http-method-known-p
+   #:http-method-properties
+   #:http-method-safe-p
+   #:http-method-idempotent-p
+   #:http-method-cacheable-p
+   #:http-method-connect-p
+   ;; Message framing and trailer validation
+   #:*http-forbidden-trailer-fields*
+   #:http-message-framing
+   #:http-message-framing-p
+   #:http-message-framing-kind
+   #:http-message-framing-length
+   #:http-message-framing-transfer-codings
+   #:http-message-framing-body-permitted-p
+   #:http-request-framing
+   #:http-response-framing
+   #:http-message-body-length
+   #:http-message-body-allowed-p
+   #:http-response-body-allowed-p
+   #:http-trailer-field-p
+   #:http-validate-trailers
+   ;; HTTP/1 wire codec
+   #:http1-decode-chunked
+   #:http1-encode-chunked
+   #:http1-serialize-request
+   #:http1-serialize-response
+   #:http1-parse-request
+   #:http1-parse-response
+   #:http1-parser
+   #:http1-parser-p
+   #:make-http1-parser
+   #:http1-parser-message-type
+   #:http1-parser-message
+   #:http1-parser-remainder
+   #:http1-parser-buffered-bytes
+   #:http1-parser-complete-p
+   #:http1-parser-end-of-input-p
+   #:http1-parser-feed
+   #:http1-parser-finish
+   #:http1-parser-reset
+   ;; HTTP/2 and HTTP/3 framing
+   #:http-frame
+   #:http-frame-p
+   #:make-http-frame
+   #:http-frame-protocol
+   #:http-frame-type
+   #:http-frame-flags
+   #:http-frame-stream-id
+   #:http-frame-payload
+   #:http-validate-header-section
+   #:http2-validate-header-section
+   #:http3-validate-header-section
+   #:http2-connection-preface
+   #:http2-connection-preface-p
+   #:http2-frame-type-code
+   #:http2-frame-type-name
+   #:http2-encode-frame
+   #:http2-decode-frame
+   #:http2-encode-settings
+   #:http2-decode-settings
+   #:http3-frame-type-code
+   #:http3-frame-type-name
+   #:http3-encode-varint
+   #:http3-decode-varint
+   #:http3-encode-frame
+   #:http3-decode-frame
+   #:http3-encode-settings
+   #:http3-decode-settings
+   ;; HPACK header compression
+   #:hpack-context
+   #:hpack-context-p
+   #:make-hpack-context
+   #:hpack-context-max-table-size
+   #:hpack-context-table-capacity
+   #:hpack-context-max-header-list-size
+   #:hpack-context-huffman-p
+   #:hpack-context-table-size
+   #:hpack-context-dynamic-entry-count
+   #:hpack-context-set-max-table-size
+   #:hpack-encode-integer
+   #:hpack-decode-integer
+   #:hpack-encode-string
+   #:hpack-decode-string
+   #:hpack-encode-header-block
+   #:hpack-decode-header-block
+   ;; QPACK header compression
+   #:qpack-context
+   #:qpack-context-p
+   #:make-qpack-context
+   #:qpack-context-max-table-capacity
+   #:qpack-context-table-capacity
+   #:qpack-context-max-blocked-streams
+   #:qpack-context-max-header-list-size
+   #:qpack-context-huffman-p
+   #:qpack-context-table-size
+   #:qpack-context-dynamic-entry-count
+   #:qpack-context-insert-count
+   #:qpack-context-known-received-count
+   #:qpack-context-set-capacity
+   #:qpack-encode-set-capacity
+   #:qpack-encode-insert-with-name-reference
+   #:qpack-encode-insert-with-literal-name
+   #:qpack-encode-duplicate
+   #:qpack-decode-encoder-stream
+   #:qpack-encode-section-ack
+   #:qpack-encode-stream-cancellation
+   #:qpack-encode-insert-count-increment
+   #:qpack-decode-decoder-stream
+   #:qpack-encode-header-block
+   #:qpack-decode-header-block
+   ;; Status helpers
+   #:http-status-reason
+   #:http-information-status-p
+   #:http-success-status-p
+   #:http-redirection-status-p
+   #:http-client-error-status-p
+   #:http-server-error-status-p
    ;; Limits and deadlines
+   #:*default-max-header-bytes*
+   #:*default-max-body-bytes*
+   #:http-check-size-limit
    #:http-deadline
    #:with-http-deadline
    #:http-size-limit-exceeded
@@ -81,4 +222,17 @@
    #:http-timeout
    #:http-timeout-kind
    #:http-unsupported-feature
-   #:http-unsupported-feature-name))
+   #:http-unsupported-feature-name
+   #:http-incomplete-message
+   #:http-incomplete-message-needed
+   #:http-incomplete-message-available
+   #:http-invalid-framing
+   #:http-invalid-framing-value
+   #:http-invalid-frame
+   #:http-invalid-frame-protocol
+   #:http-invalid-frame-type
+   #:http-invalid-frame-stream-id
+   #:http-qpack-blocked
+   #:http-qpack-blocked-required-insert-count
+   #:http-qpack-blocked-available-insert-count
+   #:http-qpack-blocked-stream-id))

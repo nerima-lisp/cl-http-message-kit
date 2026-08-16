@@ -1,2 +1,4 @@
 .worktrees/
 coverage/
+cl-http-message-kit.coverage
+cl-http-message-kit-coverage-report/
