@@ -159,8 +159,9 @@ an implied port compare unequal.
 
 When no explicit target is supplied, `http-request-target` derives the
 origin-form target — path and query only — from the URI. An explicit target is
-copied after checking for visible ASCII. Its form-specific syntax is checked by
-the HTTP/1 parser on input, by serializers before output, or by header-section
+copied after checking for visible ASCII. A character error reports the original
+target through `http-protocol-error-detail`. Its form-specific syntax is checked
+by the HTTP/1 parser on input, by serializers before output, or by header-section
 validators before encoding or after decoding a section.
 `http-request-target-form` reports its apparent form. `make-http-uri` also
 accepts a symbol as its scheme and treats the symbol name as a string.

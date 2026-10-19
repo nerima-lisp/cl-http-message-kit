@@ -13,6 +13,9 @@
 - Explicit request targets are accepted when they contain visible ASCII. Their
   form-specific syntax is checked by the HTTP parser on input and by a
   serializer or header-section validator before output.
+- Request-target character errors now return the original target through
+  `http-protocol-error-detail`, instead of `(:target target :reason :characters)`.
+  Form-specific errors keep their structured details.
 - Response constructors accept bodies and trailers for 1xx, 204, and 304
   statuses. HTTP/1 serialization rejects them; HTTP/2 and HTTP/3 transport
   adapters must apply the same status rule when writing response headers, DATA

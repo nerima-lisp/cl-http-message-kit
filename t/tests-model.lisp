@@ -108,6 +108,19 @@
     (signals http-protocol-error
       (make-http-request :method "GET" :uri "https://example.test/"
                          :protocol "bad protocol")))
+  (it "reports the original request target as the protocol error detail"
+    (dolist (code (list 0 9 10 13 31 32 127 128 256))
+      (let* ((target (format nil "/~C" (code-char code)))
+             (condition
+               (handler-case
+                   (make-http-request :method "GET"
+                                      :uri "https://example.test/"
+                                      :request-target target)
+                 (http-protocol-error (condition) condition))))
+        (expect (typep condition (quote http-protocol-error)) :to-be t)
+        (when (typep condition (quote http-protocol-error))
+          (expect (http-error-operation condition) :to-equalp :request)
+          (expect (http-protocol-error-detail condition) :to-equalp target)))))
 
   (it "accepts the supported HTTP protocol versions"
     (dolist (version '("HTTP/1.0" "HTTP/1.1" "HTTP/2" "HTTP/3"))
