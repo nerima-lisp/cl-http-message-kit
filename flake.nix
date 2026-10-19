@@ -77,7 +77,7 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-http-message-kit";
-            version = "1.0.0";
+            version = "2.0.0";
             src = builtins.path {
               path = ./.;
               name = "cl-http-message-kit-source";
@@ -177,7 +177,6 @@
                 --coverage-exclude src/defaults.lisp \
                 --coverage-exclude src/status-registry.lisp \
                 --coverage-exclude src/header-data.lisp \
-                --coverage-exclude src/hpack-data.lisp \
                 --coverage-min-expression 100 \
                 --coverage-min-branch 100
             '';

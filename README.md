@@ -7,9 +7,9 @@ implementation builds on: validated HTTP URIs, normalized header fields,
 request and response values, request-target forms, streaming bodies, status
 metadata, deadlines, size-limit checks, and a structured condition hierarchy,
 together with an HTTP/1.1 wire codec, HTTP/2 and HTTP/3 frame codecs, and
-HPACK and QPACK header compression. It has no dependencies and performs no
-I/O — it knows nothing about TLS, sockets, connection pooling, or QUIC
-transport.
+HPACK and QPACK header compression. It uses `cl-hpack-codec-kit` for HPACK
+encoding, decoding, and shared compression primitives. It performs no I/O —
+it knows nothing about TLS, sockets, connection pooling, or QUIC transport.
 
 The message model is shared by every protocol version — an HTTP/2 request and
 an HTTP/1.1 request differ in how they are encoded, not in what they are — so
@@ -21,12 +21,15 @@ compression.
 
 ## Install
 
-The runtime system has no external dependencies. Register the checkout with
-ASDF before loading it:
+The runtime system depends on `cl-hpack-codec-kit`. Register this checkout and
+the dependency source directory with ASDF before loading it:
 
 ```sh
-export CL_SOURCE_REGISTRY="$PWD//"
+export CL_SOURCE_REGISTRY="$PWD//:/path/to/cl-hpack-codec-kit//"
 ```
+
+Replace the example dependency path with its source directory. `nix develop`
+configures both systems automatically.
 
 ```lisp
 (asdf:load-system "cl-http-message-kit")
@@ -46,8 +49,9 @@ Coverage writes the machine-readable report to
 `cl-http-message-kit-coverage-report/`. The coverage command fails unless
 expression and branch coverage both reach 100%.
 
-`nix run .#test` is the release gate: it passes at 98/98 and is the
-authoritative signal of correctness. `nix run .#coverage` is currently
+`nix run .#test` is the release gate. It runs the complete suite, prints the
+test count and result totals, and fails if no tests run or any test fails.
+`nix run .#coverage` is currently
 unreliable on this codebase — `sb-cover` (the SBCL coverage instrumenter
 `cl-weave --coverage` drives) stalls once the cumulative amount of
 instrumented code in one compilation session crosses some threshold. This
@@ -137,7 +141,7 @@ calls:
 | Message framing | `http-request-framing`, `http-response-framing`, `http-message-framing`, `http-message-body-length`, `http-message-body-allowed-p`, `http-trailer-field-p`, `http-validate-trailers` |
 | HTTP/1 wire codec | `http1-serialize-request`, `-response`, `http1-parse-request`, `-response`, `http1-decode-chunked`, `-encode-chunked`, `make-http1-parser` and its `feed`/`finish`/`reset` operations |
 | HTTP/2 and HTTP/3 framing | `make-http-frame`, `http2-encode-frame`, `-decode-frame`, `-encode-settings`, `-decode-settings`, `http3-encode-frame`, `-decode-frame`, `-encode-varint`, `-decode-varint`, `-encode-settings`, `-decode-settings`, `http-validate-header-section` |
-| HPACK (HTTP/2) | `make-hpack-context`, `hpack-encode-header-block`, `-decode-header-block`, `hpack-encode-integer`, `-decode-integer`, `-encode-string`, `-decode-string` |
+| HPACK (HTTP/2) | `make-hpack-context`, `hpack-encode-header-block` (`:static-only-p`, `:sensitive-predicate`), `-decode-header-block` (`:max-fields`, `:max-header-bytes`, `:validate-header-names`), `hpack-encode-integer`, `-decode-integer`, `-encode-string`, `-decode-string` |
 | QPACK (HTTP/3) | `make-qpack-context`, `qpack-encode-header-block`, `-decode-header-block`, `-encode-insert-with-name-reference`, `-with-literal-name`, `-duplicate`, `qpack-decode-encoder-stream`, `-decoder-stream`, `qpack-encode-section-ack`, `-stream-cancellation`, `-insert-count-increment` |
 | Status | `http-status-reason` and the five informational/success/redirection/client-error/server-error predicates |
 | Limits and deadlines | `http-check-size-limit`, `*default-max-header-bytes*`, `*default-max-body-bytes*`, `http-deadline`, `with-http-deadline` |
@@ -190,13 +194,29 @@ The HTTP/2 and HTTP/3 codecs cover frame and settings encoding/decoding
 (`http2-encode-frame`, `http3-decode-frame`, and their settings
 counterparts) and pseudo-header section validation
 (`http-validate-header-section`), including the extended-CONNECT and
-trailer-section forms both protocols define. HPACK and QPACK implement the
-RFC 7541 and RFC 9204 compression algorithms — static and dynamic table
-lookup, Huffman coding, and, for QPACK, the encoder/decoder stream
-instructions and blocked-stream handling that give HTTP/3 header compression
-its out-of-order delivery guarantees. Both keep compression state in an
-explicit `hpack-context` or `qpack-context` value rather than global state, so
-a caller manages one context per connection.
+trailer-section forms both protocols define. HPACK block encoding and
+decoding, static and dynamic table handling, and Huffman coding use
+`cl-hpack-codec-kit`. QPACK also uses that kit's Huffman, integer, and
+header-name validation primitives while retaining the RFC 9204 encoder/decoder stream
+instructions and blocked-stream handling that support out-of-order delivery.
+Both keep compression state in an explicit `hpack-context` or `qpack-context`
+value rather than global state, so a caller manages one context per connection.
+
+QPACK checks pseudo-header name syntax while decoding. It does not check which
+pseudo-headers are defined for a section, which are required, or their order.
+Immediately after decoding an HTTP/3 field section, call
+`http3-validate-header-section` with `:request-p t` for a request,
+`:trailers-p t` for trailers, or neither flag for a response. If decoding was
+blocked, validate immediately after resuming the section. Do this before
+building the request, response, or trailer model.
+
+HPACK decoding accepts per-call `:max-fields` and `:max-header-bytes` limits;
+each can only tighten the configured context limit. `:validate-header-names t`
+enables lowercase name syntax validation, and a context configured to validate
+names cannot be relaxed for an individual call. Encoding can select static
+representations with `:static-only-p t`. A `:sensitive-predicate` receives the
+normalized name and value as octet vectors and marks matching fields as
+never-indexed.
 
 This library stops at message and wire-format semantics. It does not open
 sockets, negotiate TLS, drive QUIC transport, or manage connection pooling.
