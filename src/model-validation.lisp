@@ -74,7 +74,9 @@
   (error 'http-protocol-error
          :message "HTTP request-target has an invalid form."
          :operation :request
-         :detail (list :target target :reason detail)))
+         :detail (if (eq detail :characters)
+                     target
+                     (list :target target :reason detail))))
 
 (defun %validate-request-target (target)
   (unless (%request-target-value-p target)
