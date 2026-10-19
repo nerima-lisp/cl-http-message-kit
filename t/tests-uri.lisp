@@ -9,6 +9,9 @@
       (expect (http-uri-authority uri) :to-equalp "example.test:8443")
       (expect (http-uri-path uri) :to-equalp "/a/b")
       (expect (http-uri-query uri) :to-equalp "q=1")))
+  (it "accepts a symbol URI scheme"
+    (let ((uri (make-http-uri :scheme :HTTPS :authority "example.test")))
+      (expect (http-uri-scheme uri) :to-equalp "https")))
 
   (it "preserves the original text"
     (expect (http-uri-string (parse-http-uri "https://example.test:8443/a/b?q=1"))
@@ -49,6 +52,19 @@
         (setf (char query 0) #\X))
       (expect (http-uri-path uri) :to-equalp "/path")
       (expect (http-uri-query uri) :to-equalp "q=1")))
+  (it "validates and copies assigned URI paths"
+    (let* ((uri (parse-http-uri "http://example.test/path?q=1"))
+           (assigned-path (copy-seq "/updated")))
+      (setf (http-uri-path uri) assigned-path)
+      (setf (char assigned-path 1) #\X)
+      (expect (http-uri-path uri) :to-equalp "/updated")
+      (expect (http-uri-string uri) :to-equalp "http://example.test/updated?q=1")
+      (signals http-invalid-uri
+        (setf (http-uri-path uri) "relative"))
+      (signals http-invalid-uri
+        (setf (http-uri-path uri) "/bad?query"))
+      (signals http-invalid-uri
+        (setf (http-uri-path uri) "/bad#fragment"))))
 
   (it "accepts IPv4, IPv6, IPvFuture, and zone identifiers"
     (dolist (input '("http://127.0.0.1:8080/"

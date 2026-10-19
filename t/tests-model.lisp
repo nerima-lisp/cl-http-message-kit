@@ -80,7 +80,7 @@
       (expect (http-request-target request) :to-equalp "/path?")
       (expect (http-request-target-form request) :to-equalp :origin)))
 
-  (it "validates methods, targets, and protocol versions"
+  (it "validates methods, targets, protocols, and protocol versions"
     (signals http-protocol-error
       (make-http-request :method "bad method" :uri "https://example.test/"))
     (signals http-protocol-error
@@ -88,7 +88,24 @@
                          :request-target "bad target"))
     (signals http-protocol-error
       (make-http-request :method "GET" :uri "https://example.test/"
-                         :protocol-version "HTTP/9")))
+                         :protocol-version "HTTP/9"))
+    (let* ((protocol (copy-seq "WebSocket"))
+           (request (make-http-request :method "GET"
+                                       :uri "https://example.test/"
+                                       :protocol protocol))
+           (returned (http-request-protocol request)))
+      (setf (char protocol 0) #\x
+            (char returned 0) #\x)
+      (expect (http-request-protocol request) :to-equalp "websocket"))
+    (expect (http-request-protocol
+             (make-http-request :method "GET" :uri "https://example.test/"))
+            :to-equalp nil)
+    (signals http-protocol-error
+      (make-http-request :method "GET" :uri "https://example.test/"
+                         :protocol 42))
+    (signals http-protocol-error
+      (make-http-request :method "GET" :uri "https://example.test/"
+                         :protocol "bad protocol")))
 
   (it "accepts the supported HTTP protocol versions"
     (dolist (version '("HTTP/1.0" "HTTP/1.1" "HTTP/2" "HTTP/3"))
@@ -119,7 +136,7 @@
     (expect (http-status-reason 104) :to-equalp "Upload Resumption Supported")
     (expect (http-status-reason 506) :to-equalp "Variant Also Negotiates")
     (expect (http-status-reason 508) :to-equalp "Loop Detected")
-    (expect (http-status-reason 418) :to-equalp "")
+    (expect (http-status-reason 418) :to-equalp "I'm a teapot")
     (expect (http-information-status-p 199) :to-equalp t)
     (expect (http-success-status-p 204) :to-equalp t)
     (expect (http-redirection-status-p 302) :to-equalp t)
@@ -206,10 +223,32 @@
       (with-http-deadline (deadline 0 :clock-function (lambda () 1) :kind :read)
         deadline)))
 
-  (it "rejects invalid stream arguments"
+  (it "accepts a missing response body function and rejects invalid stream arguments"
     (signals http-protocol-error
       (make-http-request-stream :method "GET" :uri "https://example.test/"
                                 :body-function nil))
+    (let ((response (make-http-response-stream :status 200 :body-function nil)))
+      (expect (http-response-stream-body-function response) :to-equalp nil))
+    (signals http-protocol-error
+      (make-http-response-stream :status 200 :body-function :invalid))
     (signals http-protocol-error
       (make-http-response-stream :status 200 :body-function (lambda () nil)
                                  :body-length -1))))
+(describe "HTTP message compatibility edge cases"
+  (it "rejects content on TRACE requests while preserving method case"
+    (signals http-protocol-error
+      (make-http-request :method "TRACE"
+                         :uri "https://example.test/"
+                         :body (octets 1)))
+    (expect (http-request-body
+             (make-http-request :method "trace"
+                                :uri "https://example.test/"
+                                :body (octets 1)))
+            :to-equalp (octets 1)))
+  (it "uses the matching reason phrases for 306 and 418"
+    (expect (http-status-reason 306) :to-equalp "Switch Proxy")
+    (expect (http-status-reason 418) :to-equalp "I'm a teapot")
+    (expect (http-response-reason (make-http-response :status 306))
+            :to-equalp "Switch Proxy")
+    (expect (http-response-reason (make-http-response :status 418))
+            :to-equalp "I'm a teapot")))

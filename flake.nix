@@ -31,6 +31,31 @@
       forEachSystem =
         function:
         nixpkgs.lib.genAttrs systems (system: function system (import nixpkgs { inherit system; }));
+      testProgram =
+        system: pkgs:
+        pkgs.writeShellApplication {
+          name = "cl-http-message-kit-test";
+          runtimeInputs = [
+            cl-weave.packages.${system}.default
+            pkgs.coreutils
+          ];
+          text = ''
+            export HOME="$TMPDIR"
+            export CL_SOURCE_REGISTRY="$PWD//"
+            exec timeout --signal=TERM --kill-after=10s 120s \
+              cl-weave run \
+              --load "$PWD/cl-http-message-kit.asd" \
+              cl-http-message-kit/test \
+              --reporter spec \
+              --fail-with-no-tests \
+              --test-timeout-ms 30000 \
+              --max-workers 1
+          '';
+        };
+      testSource = builtins.path {
+        path = ./.;
+        name = "cl-http-message-kit-test-source";
+      };
     in
     {
       formatter = forEachSystem (system: pkgs: pkgs.nixfmt-tree);
@@ -63,6 +88,27 @@
         }
       );
 
+      checks = forEachSystem (
+        system: pkgs:
+        let
+          test = testProgram system pkgs;
+        in
+        {
+          test =
+            pkgs.runCommand "cl-http-message-kit-test-check"
+              {
+                src = testSource;
+              }
+              ''
+                set -e
+                cp -r "$src"/. .
+                chmod -R u+w .
+                ${test}/bin/cl-http-message-kit-test
+                mkdir -p "$out"
+              '';
+        }
+      );
+
       devShells = forEachSystem (
         system: pkgs: {
           default = pkgs.mkShell {
@@ -81,24 +127,7 @@
         system: pkgs:
         let
           clWeave = cl-weave.packages.${system}.default;
-          test = pkgs.writeShellApplication {
-            name = "cl-http-message-kit-test";
-            runtimeInputs = [
-              clWeave
-              pkgs.coreutils
-            ];
-            text = ''
-              export CL_SOURCE_REGISTRY="$PWD//"
-              exec timeout --signal=TERM --kill-after=10s 120s \
-                cl-weave run \
-                --load "$PWD/cl-http-message-kit.asd" \
-                cl-http-message-kit/test \
-                --reporter spec \
-                --fail-with-no-tests \
-                --test-timeout-ms 30000 \
-                --max-workers 1
-            '';
-          };
+          test = testProgram system pkgs;
           coverage = pkgs.writeShellApplication {
             name = "cl-http-message-kit-coverage";
             runtimeInputs = [
