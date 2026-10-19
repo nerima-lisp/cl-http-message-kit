@@ -177,9 +177,15 @@ continuation flow. It does not perform I/O or retain chunks, so a transport can
 choose its own scheduling, backpressure, and resource lifetime around the
 message model.
 
-Constructors validate and copy model-owned fields. Request-target form syntax,
-status-specific body rules, and prohibited trailer names are checked at the
-parser, serializer, or protocol boundary that has the relevant wire context.
+Protocol-version constructors validate and retain supplied strings. Request,
+response, request-stream, and response-stream protocol-version accessors return
+the stored string directly. Mutations to a supplied string are visible through
+every value that shares it; pass `(copy-seq version)` when you need an
+independent version value.
+
+Request-target form syntax, status-specific body rules, and prohibited trailer
+names are checked at the parser, serializer, or protocol boundary that has the
+relevant wire context.
 Header field accessors expose their stored values, and their setters store and
 return the assigned value as-is. Message constructors still copy and revalidate
 headers, and request and response accessors return copies of each header, so

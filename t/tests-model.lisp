@@ -115,7 +115,33 @@
                (make-http-request :method "GET"
                                   :uri "https://example.test/"
                                   :protocol-version version))
-              :to-equalp version))))
+              :to-equalp version)))
+  (it "shares protocol-version strings across requests and streams"
+      (let* ((version (copy-seq "HTTP/1.1"))
+             (request (make-http-request :method "GET"
+                                         :uri "https://example.test/"
+                                         :protocol-version version))
+             (request-stream
+              (make-http-request-stream
+               :method "GET"
+               :uri "https://example.test/"
+               :protocol-version (http-request-protocol-version request)
+               :body-function (lambda () nil)))
+             (response-stream
+              (make-http-response-stream
+               :status 200
+               :protocol-version (http-request-protocol-version request))))
+        (expect (eq version (http-request-protocol-version request)) :to-equalp t)
+        (expect (eq version (http-request-stream-protocol-version request-stream))
+                :to-equalp t)
+        (expect (eq version (http-response-stream-protocol-version response-stream))
+                :to-equalp t)
+        (setf (char (http-request-protocol-version request) 7) #\9)
+        (expect version :to-equalp "HTTP/1.9")
+        (expect (http-request-stream-protocol-version request-stream)
+                :to-equalp "HTTP/1.9")
+        (expect (http-response-stream-protocol-version response-stream)
+                :to-equalp "HTTP/1.9"))))
 
 (describe "make-http-response"
   (it "keeps the status and body and supplies the registered reason"
@@ -236,7 +262,19 @@
       (make-http-response-stream :status 200 :body-function :invalid))
     (signals http-protocol-error
       (make-http-response-stream :status 200 :body-function (lambda () nil)
-                                 :body-length -1))))
+                                 :body-length -1)))
+  (it "preserves response protocol-version identity"
+      (let* ((version (copy-seq "HTTP/1.1"))
+             (response (make-http-response :status 200
+                                           :protocol-version version))
+             (stream (make-http-response-stream :status 200
+                                                :protocol-version version)))
+        (expect (eq version (http-response-protocol-version response)) :to-equalp t)
+        (expect (eq version (http-response-stream-protocol-version stream))
+                :to-equalp t)
+        (setf (char (http-response-protocol-version response) 7) #\9)
+        (expect version :to-equalp "HTTP/1.9")
+        (expect (http-response-stream-protocol-version stream) :to-equalp "HTTP/1.9"))))
 (describe "HTTP message compatibility edge cases"
   (it "rejects content on TRACE requests while preserving method case"
     (signals http-protocol-error

@@ -35,7 +35,7 @@
 
 (defun http-response-protocol-version (response)
   (check-type response http-response)
-  (copy-seq (%response-protocol-version response)))
+  (%response-protocol-version response))
 
 (defun http-response-status (response)
   (check-type response http-response)
@@ -83,7 +83,7 @@
 
 (defun http-response-stream-protocol-version (stream)
   (check-type stream http-response-stream)
-  (copy-seq (%response-stream-protocol-version stream)))
+  (%response-stream-protocol-version stream))
 
 (defun http-response-stream-status (stream)
   (check-type stream http-response-stream)

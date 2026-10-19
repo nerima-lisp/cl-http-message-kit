@@ -28,6 +28,11 @@
   that consumes it is responsible for checking returned chunks and enforcing
   the declared body length. Function and body-length arguments remain checked
   by the constructor.
+- Protocol-version constructors retain the supplied string object, and the
+  request, response, request-stream, and response-stream protocol-version
+  accessors return the stored string directly. Mutations to a supplied string
+  are visible to every value sharing it; pass `(copy-seq version)` when you
+  need an independent value.
 - `make-http-uri` accepts a symbol scheme and treats its name as a string.
 - `make-http-uri` and `parse-http-uri` reject RFC 6874 IPv6 zone identifiers,
   such as `[fe80::1%25en0]`.

@@ -38,7 +38,7 @@
 
 (defun http-request-protocol-version (request)
   (check-type request http-request)
-  (copy-seq (%request-protocol-version request)))
+  (%request-protocol-version request))
 
 (defun http-request-protocol (request)
   (check-type request http-request)
@@ -113,7 +113,7 @@
 
 (defun http-request-stream-protocol-version (stream)
   (check-type stream http-request-stream)
-  (copy-seq (%request-stream-protocol-version stream)))
+  (%request-stream-protocol-version stream))
 
 (defun http-request-stream-method (stream)
   (check-type stream http-request-stream)
