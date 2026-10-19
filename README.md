@@ -142,7 +142,7 @@ calls:
 | HTTP/1 wire codec | `http1-serialize-request`, `-response`, `http1-parse-request`, `-response`, `http1-decode-chunked`, `-encode-chunked`, `make-http1-parser` and its `feed`/`finish`/`reset` operations |
 | HTTP/2 and HTTP/3 framing | `make-http-frame`, `http2-encode-frame`, `-decode-frame`, `-encode-settings`, `-decode-settings`, `http3-encode-frame`, `-decode-frame`, `-encode-varint`, `-decode-varint`, `-encode-settings`, `-decode-settings`, `http-validate-header-section` |
 | HPACK (HTTP/2) | `make-hpack-context`, `hpack-encode-header-block` (`:static-only-p`, `:sensitive-predicate`), `-decode-header-block` (`:max-fields`, `:max-header-bytes`, `:validate-header-names`), `hpack-encode-integer`, `-decode-integer`, `-encode-string`, `-decode-string` |
-| QPACK (HTTP/3) | `make-qpack-context`, `qpack-encode-header-block`, `-decode-header-block`, `-encode-insert-with-name-reference`, `-with-literal-name`, `-duplicate`, `qpack-decode-encoder-stream`, `-decoder-stream`, `qpack-encode-section-ack`, `-stream-cancellation`, `-insert-count-increment` |
+| QPACK (HTTP/3) | `make-qpack-context`, `qpack-encode-header-block`, `qpack-decode-header-block`, `qpack-encode-set-capacity`, `qpack-encode-insert-with-name-reference`, `qpack-encode-insert-with-literal-name`, `qpack-encode-duplicate`, `qpack-decode-encoder-stream`, `qpack-decode-decoder-stream`, `qpack-encode-section-ack`, `qpack-encode-stream-cancellation`, `qpack-encode-insert-count-increment`, `qpack-make-http3-decoder-context`, `qpack-decode-http3-field-section`, `qpack-blocked-stream-p`, `qpack-take-ready-streams`, `qpack-resume-blocked-stream`, `qpack-cancel-blocked-stream`, `qpack-close-http3-decoder-context` |
 | Status | `http-status-reason` and the five informational/success/redirection/client-error/server-error predicates |
 | Limits and deadlines | `http-check-size-limit`, `*default-max-header-bytes*`, `*default-max-body-bytes*`, `http-deadline`, `with-http-deadline` |
 | Conditions | `http-error`, `http-protocol-error`, `http-invalid-uri`, `http-invalid-header`, `http-invalid-status`, `http-connection-error`, `http-timeout`, `http-size-limit-exceeded`, `http-unsupported-feature`, `http-incomplete-message`, `http-invalid-framing`, `http-invalid-frame`, `http-qpack-blocked` |
@@ -197,18 +197,112 @@ counterparts) and pseudo-header section validation
 trailer-section forms both protocols define. HPACK block encoding and
 decoding, static and dynamic table handling, and Huffman coding use
 `cl-hpack-codec-kit`. QPACK also uses that kit's Huffman, integer, and
-header-name validation primitives while retaining the RFC 9204 encoder/decoder stream
-instructions and blocked-stream handling that support out-of-order delivery.
-Both keep compression state in an explicit `hpack-context` or `qpack-context`
-value rather than global state, so a caller manages one context per connection.
+header-name validation primitives while retaining the RFC 9204 encoder/decoder
+stream instructions and blocked-stream handling that support out-of-order
+delivery. Each connection needs separate compression contexts for each
+direction.
 
-QPACK checks pseudo-header name syntax while decoding. It does not check which
-pseudo-headers are defined for a section, which are required, or their order.
-Immediately after decoding an HTTP/3 field section, call
-`http3-validate-header-section` with `:request-p t` for a request,
-`:trailers-p t` for trailers, or neither flag for a response. If decoding was
-blocked, validate immediately after resuming the section. Do this before
-building the request, response, or trailer model.
+The low-level `qpack-decode-header-block` checks pseudo-header name syntax,
+but not the allowed names, required fields, or order for a section. The HTTP/3
+adapter below requires a section role and validates every decoded section,
+including after a blocked section resumes.
+
+### HTTP/3 QPACK transport adapter
+
+Create one decoder `qpack-context` and wrap it in an adapter context. The
+encoder-stream decoder and field-section decoder must use the same decoder
+context so inserts parsed from the encoder stream are visible when blocked
+sections resume. Set `:max-table-capacity` from the local HTTP/3 setting and
+pass the local `SETTINGS_QPACK_BLOCKED_STREAMS` value as
+`:max-blocked-streams`. The adapter enforces that limit independently of the
+`qpack-context`.
+
+The `:serialize` callback has the shape `(lambda (thunk) ...)`. It must call
+its thunk exactly once, synchronously, while holding the per-connection lock
+used for QPACK state changes. The adapter does not create that lock. The
+transport must use the same lock around encoder-stream decoding and ready-token
+draining.
+
+```lisp
+(let* ((decoder (http-message-kit:make-qpack-context
+                 :max-table-capacity local-table-limit
+                 :table-capacity 0))
+       (adapter (http-message-kit:qpack-make-http3-decoder-context
+                 decoder
+                 :max-blocked-streams local-blocked-stream-limit)))
+  (http-message-kit:qpack-decode-http3-field-section
+   field-section adapter stream-id
+   :role :request
+   :serialize serialize
+   :max-header-bytes max-header-bytes
+   :max-fields max-fields))
+```
+
+`field-section` is the compressed payload of a HEADERS frame, and `stream-id`
+is its QUIC stream ID. Use `:role :request`, `:response`, or `:trailers`.
+The adapter validates the section before returning its fields. Header limits
+come from local resource policy. Exceeding `SETTINGS_QPACK_BLOCKED_STREAMS`
+raises `http-connection-error` with a `:qpack-decompression-failed` cause.
+
+The decode call returns fields or an opaque token. Use
+`qpack-blocked-stream-p` to distinguish them. Associate each token with its
+stream and waiter in transport-owned state; tokens expose no stream ID. After
+`qpack-decode-encoder-stream` applies bytes to the same `decoder`, call
+`qpack-take-ready-streams` under the connection lock and deliver every token to
+its waiter after leaving that serialized operation. Resume each token exactly
+once with `qpack-resume-blocked-stream`; it reacquires the lock through the
+`:serialize` callback saved in the token.
+
+The adapter owns its blocked and latest-token maps. The blocked map holds each
+token until its required inserts arrive; taking ready streams removes tokens
+from that map. The latest map keeps one token per stream until resume,
+cancellation, or connection close, so cancellation can still find a ready
+token after its waiter drops it. Each token's resume callback retains a copy of
+the compressed field section; resuming or cancelling clears that callback and
+its references. If decoding a newer blocked section for a stream invalidates
+its previous token, only the new token can be resumed. Settle the previous
+waiter through the transport's own cancellation or error path, remove its
+association, then associate the current waiter with the new token. The adapter
+does not retarget waiters. Remove each association after resume or cancellation.
+
+The adapter manages field-section decoding and cancellation, not the full
+QPACK feedback path. The transport must send `qpack-encode-section-ack` after
+successfully decoding a field section that used dynamic table references; it
+may use `qpack-encode-insert-count-increment` to report encoder-stream inserts.
+The Encoded Required Insert Count in the field-section prefix is zero when the
+section has no dynamic references and nonzero when it does. Use
+`qpack-decode-decoder-stream` on the matching encoder `qpack-context` to
+process the peer's decoder instructions. Serialize these state changes with
+the corresponding connection QPACK operation. See [RFC 9204 Section
+2.2.2](https://www.rfc-editor.org/rfc/rfc9204.html#section-2.2.2) and [Section
+4.5.1](https://www.rfc-editor.org/rfc/rfc9204.html#section-4.5.1).
+
+On stream reset or cancellation, call
+`qpack-cancel-blocked-stream` with the adapter context and stream ID. Pass the
+connection's `:serialize` callback unless cancellation is already inside that
+serialized operation. It removes the stream from both maps, clears the token's
+saved references, and returns two values: whether local token state was
+released, and the encoded Stream Cancellation instruction. Always append the
+instruction to the QPACK decoder stream, even when no local token was released
+or its token was already ready.
+
+On connection close, call `qpack-close-http3-decoder-context` to clear both
+maps and token references. Pass the connection's `:serialize` callback unless
+close is already inside that serialized operation, then discard the adapter,
+decoder context, queued tokens, and token-to-waiter associations. Connection
+close sends no Stream Cancellation instruction.
+
+If sending a cancellation instruction fails or delivery is uncertain, close
+the connection and discard both QPACK contexts. Keep the local cleanup; do not
+restore tokens, table entries, insert counts, or outstanding references. QPACK
+encoding is not transactional: if a field section or encoder instruction may
+have been partially sent, discard both contexts rather than rolling state
+back. Even if the transport proves that zero bytes were sent, close the
+connection and discard both contexts because this release has no operation
+that safely rolls back all related state. The transport may remove its own
+unsent byte buffer.
+
+Allocation failure during encoder-stream processing can leave the dynamic table partially updated; close the connection and discard both QPACK contexts because this release does not roll back partial table changes.
 
 HPACK decoding accepts per-call `:max-fields` and `:max-header-bytes` limits;
 each can only tighten the configured context limit. `:validate-header-names t`

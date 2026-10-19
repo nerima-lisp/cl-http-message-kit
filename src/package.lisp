@@ -186,6 +186,14 @@
    #:qpack-decode-decoder-stream
    #:qpack-encode-header-block
    #:qpack-decode-header-block
+   ;; HTTP/3 transport adapter
+   #:qpack-make-http3-decoder-context
+   #:qpack-decode-http3-field-section
+   #:qpack-blocked-stream-p
+   #:qpack-take-ready-streams
+   #:qpack-resume-blocked-stream
+   #:qpack-cancel-blocked-stream
+   #:qpack-close-http3-decoder-context
    ;; Status helpers
    #:http-status-reason
    #:http-information-status-p
