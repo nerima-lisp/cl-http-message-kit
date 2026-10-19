@@ -373,8 +373,7 @@
          wire context 3 :max-header-bytes 1 :max-fields 1))
       (expect
        (hash-table-count
-        (http-message-kit::http3-qpack-decoder-context-blocked-streams
-         context))
+        (http-message-kit::http3-qpack-decoder-context-blocked-streams context))
        :to-be 0))))
 (describe "QPACK HTTP/3 transport adapter"
   (it "resumes a field section after encoder-stream inserts on the shared context"
@@ -405,7 +404,7 @@
       (expect (qpack-resume-blocked-stream blocked)
               :to-equalp (list (cons "x-field" "value")))
       (expect (hash-table-count
-               (http3-qpack-decoder-context-latest-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
               :to-be 0)
       (signals http-protocol-error
         (qpack-resume-blocked-stream blocked))))
@@ -460,7 +459,7 @@
       (signals http-invalid-header
         (qpack-resume-blocked-stream blocked))
       (expect (hash-table-count
-               (http3-qpack-decoder-context-latest-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
               :to-be 0)))
 
   (it "returns RFC stream-cancellation bytes and frees blocked-stream capacity"
@@ -489,15 +488,15 @@
           (expect consumed :to-be (length instruction))))
       (expect serialize-calls :to-be 1)
       (expect (hash-table-count
-               (http3-qpack-decoder-context-blocked-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
               :to-be 0)
       (expect (hash-table-count
-               (http3-qpack-decoder-context-latest-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
               :to-be 0)
-      (expect (http3-qpack-blocked-stream-resume-function blocked)
+      (expect (http-message-kit::http3-qpack-blocked-stream-resume-function blocked)
               :to-be nil)
-      (expect (http3-qpack-blocked-stream-serialize blocked) :to-be nil)
-      (expect (http3-qpack-blocked-stream-context blocked) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-serialize blocked) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-context blocked) :to-be nil)
       (let ((next (qpack-decode-http3-field-section
                    (octets 2 0 #x80) adapter 7 :role :trailers)))
         (expect (qpack-blocked-stream-p next) :to-be t)
@@ -506,10 +505,10 @@
           (expect released-p :to-be t)
           (expect instruction :to-equalp (octets #x47)))
         (expect (hash-table-count
-                 (http3-qpack-decoder-context-blocked-streams adapter))
+                 (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
                 :to-be 0)
         (expect (hash-table-count
-                 (http3-qpack-decoder-context-latest-streams adapter))
+                 (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
                 :to-be 0))))
 
 
@@ -540,12 +539,12 @@
         (expect released-p :to-be t)
         (expect instruction :to-equalp (octets #x48)))
       (expect (hash-table-count
-               (http3-qpack-decoder-context-blocked-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
               :to-be 0)
       (expect (hash-table-count
-               (http3-qpack-decoder-context-latest-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
               :to-be 0)
-      (expect (http3-qpack-blocked-stream-resume-function token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-resume-function token) :to-be nil)
       (signals http-protocol-error
         (qpack-resume-blocked-stream token))))
 
@@ -561,15 +560,15 @@
       (expect (qpack-blocked-stream-p token) :to-be t)
       (qpack-close-http3-decoder-context adapter)
       (expect (hash-table-count
-               (http3-qpack-decoder-context-blocked-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
               :to-be 0)
       (expect (hash-table-count
-               (http3-qpack-decoder-context-latest-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
               :to-be 0)
-      (expect (http3-qpack-blocked-stream-resume-function token) :to-be nil)
-      (expect (http3-qpack-blocked-stream-serialize token) :to-be nil)
-      (expect (http3-qpack-blocked-stream-context token) :to-be nil)
-      (expect (http3-qpack-decoder-context-closed-p adapter) :to-be t)
+      (expect (http-message-kit::http3-qpack-blocked-stream-resume-function token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-serialize token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-context token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-decoder-context-closed-p adapter) :to-be t)
       (signals http-protocol-error
         (qpack-take-ready-streams adapter))))
 
@@ -597,11 +596,11 @@
             (expect (first (http-protocol-error-detail cause))
                     :to-be :qpack-decompression-failed))))
       (expect (hash-table-count
-               (http3-qpack-decoder-context-blocked-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
               :to-be 1)
       (qpack-close-http3-decoder-context adapter)
       (expect (hash-table-count
-               (http3-qpack-decoder-context-blocked-streams adapter))
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
               :to-be 0)))
 
 
