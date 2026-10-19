@@ -40,7 +40,7 @@
    :dynamic-table dynamic-table :blocked-stream-limit blocked-stream-limit))
 
 (defun %http3-qpack-register-blocked-stream
-    (context stream-id required-insert-count resume-function
+    (context stream-id required-insert-count octets resume-function-factory
      &optional (serialize (lambda (thunk) (funcall thunk))))
   (unless (and (integerp stream-id)
                (<= 0 stream-id #x3fffffffffffffff))
@@ -54,14 +54,16 @@
                 (< (hash-table-count streams)
                    (http3-qpack-decoder-context-blocked-stream-limit context)))
       (%qpack-error "QPACK blocked-stream limit exceeded." stream-id))
-    (when existing-latest
-      (setf (http3-qpack-blocked-stream-state existing-latest) :invalid))
-    (let ((blocked (%make-http3-qpack-blocked-stream
-                    :stream-id stream-id
-                    :required-insert-count required-insert-count
-                    :resume-function resume-function
-                    :serialize serialize
-                    :context context)))
+    (let* ((snapshot (copy-seq octets))
+           (resume-function (funcall resume-function-factory snapshot))
+           (blocked (%make-http3-qpack-blocked-stream
+                     :stream-id stream-id
+                     :required-insert-count required-insert-count
+                     :resume-function resume-function
+                     :serialize serialize
+                     :context context)))
+      (when existing-latest
+        (setf (http3-qpack-blocked-stream-state existing-latest) :invalid))
       (setf (gethash stream-id streams) blocked
             (gethash stream-id latest-streams) blocked)
       blocked)))
@@ -155,12 +157,14 @@
                       context stream-id
                       (qpack-blocked-field-section-required-insert-count
                        condition)
-                      (lambda ()
-                        (decode-http3-qpack-field-section
-                         octets context stream-id
-                         :serialize serialize :on-decoded on-decoded
-                         :max-header-bytes max-header-bytes
-                         :max-fields max-fields))
+                      octets
+                      (lambda (snapshot)
+                        (lambda ()
+                          (decode-http3-qpack-field-section
+                           snapshot context stream-id
+                           :serialize serialize :on-decoded on-decoded
+                           :max-header-bytes max-header-bytes
+                           :max-fields max-fields)))
                       serialize))))))
       (http-protocol-error (condition)
         (error 'http-protocol-error

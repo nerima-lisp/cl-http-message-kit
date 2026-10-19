@@ -289,3 +289,22 @@
         (expect used :to-be 6)
         (expect required :to-be 0)
         (expect base :to-be 0)))))
+
+(describe "QPACK blocked-stream snapshots"
+  (it "resumes from original field-section bytes after caller mutation"
+    (let* ((wire (octets 2 0 #x80))
+           (decoder-table (http-message-kit::make-qpack-dynamic-table :max-capacity 128))
+           (context
+             (http-message-kit::make-http3-qpack-decoder-context
+              decoder-table :blocked-stream-limit 1))
+           (blocked
+             (http-message-kit::decode-http3-qpack-field-section
+              wire context 3)))
+      (expect (http-message-kit::http3-qpack-blocked-stream-p blocked)
+              :to-be t)
+      (setf (aref wire 2) #x81)
+      (http-message-kit::qpack-dynamic-table-insert decoder-table "x-original" "v")
+      (expect (http-message-kit::%http3-qpack-detach-ready-streams context)
+              :to-equalp (list blocked))
+      (expect (http-message-kit::resume-http3-qpack-blocked-stream blocked)
+              :to-equalp (list (cons "x-original" "v"))))))
