@@ -16,16 +16,24 @@
            :detail protocol))
   (when request-target
     (%validate-request-target request-target))
-  (let ((normalized-trailers (http-validate-trailers trailers)))
-    (%make-http-request
-     :protocol-version (%validate-protocol-version protocol-version :request)
-     :protocol (and protocol (%ascii-lowercase protocol))
-     :method (copy-seq method)
-     :uri (%coerce-uri uri)
-     :target (%copy-string-or-nil request-target)
-     :headers (%normalize-headers headers)
-     :trailers normalized-trailers
-     :body (if body (%copy-octets body) (%empty-octets)))))
+  (let* ((normalized-trailers (http-validate-trailers trailers))
+         (request
+           (%make-http-request
+            :protocol-version (%validate-protocol-version protocol-version :request)
+            :protocol (and protocol (%ascii-lowercase protocol))
+            :method (copy-seq method)
+            :uri (%coerce-uri uri)
+            :target (%copy-string-or-nil request-target)
+            :headers (%normalize-headers headers)
+            :trailers normalized-trailers
+            :body (if body (%copy-octets body) (%empty-octets)))))
+    (when (and (string= method "TRACE")
+               (plusp (length (%request-body request))))
+      (error 'http-protocol-error
+             :message "TRACE requests must not contain content."
+             :operation :request
+             :detail :trace-content))
+    request))
 
 (defun http-request-protocol-version (request)
   (check-type request http-request)

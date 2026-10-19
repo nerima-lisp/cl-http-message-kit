@@ -136,7 +136,7 @@
     (expect (http-status-reason 104) :to-equalp "Upload Resumption Supported")
     (expect (http-status-reason 506) :to-equalp "Variant Also Negotiates")
     (expect (http-status-reason 508) :to-equalp "Loop Detected")
-    (expect (http-status-reason 418) :to-equalp "")
+    (expect (http-status-reason 418) :to-equalp "I'm a teapot")
     (expect (http-information-status-p 199) :to-equalp t)
     (expect (http-success-status-p 204) :to-equalp t)
     (expect (http-redirection-status-p 302) :to-equalp t)
@@ -234,3 +234,21 @@
     (signals http-protocol-error
       (make-http-response-stream :status 200 :body-function (lambda () nil)
                                  :body-length -1))))
+(describe "HTTP message compatibility edge cases"
+  (it "rejects content on TRACE requests while preserving method case"
+    (signals http-protocol-error
+      (make-http-request :method "TRACE"
+                         :uri "https://example.test/"
+                         :body (octets 1)))
+    (expect (http-request-body
+             (make-http-request :method "trace"
+                                :uri "https://example.test/"
+                                :body (octets 1)))
+            :to-equalp (octets 1)))
+  (it "uses the matching reason phrases for 306 and 418"
+    (expect (http-status-reason 306) :to-equalp "Switch Proxy")
+    (expect (http-status-reason 418) :to-equalp "I'm a teapot")
+    (expect (http-response-reason (make-http-response :status 306))
+            :to-equalp "Switch Proxy")
+    (expect (http-response-reason (make-http-response :status 418))
+            :to-equalp "I'm a teapot")))
