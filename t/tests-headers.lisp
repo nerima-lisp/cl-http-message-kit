@@ -1,10 +1,16 @@
 (in-package #:http-message-kit/test)
 
 (describe "make-http-header"
-  (it "preserves field-name case"
-    (let ((header (make-http-header "Content-Type" "text/plain")))
+  (it "retains caller-owned field-name strings"
+    (let* ((name (copy-seq "Content-Type"))
+           (header (make-http-header name "text/plain"))
+           (copy (http-header-copy header)))
+      (expect (eq (http-header-name header) name) :to-be-truthy)
       (expect (http-header-name header) :to-equalp "Content-Type")
-      (expect (http-header-content header) :to-equalp "text/plain")))
+      (setf (char name 0) #\x)
+      (expect (http-header-name header) :to-equalp "xontent-Type")
+      (expect (http-header-name copy) :to-equalp "Content-Type")
+      (expect (http-header-content copy) :to-equalp "text/plain")))
 
   (it "rejects an empty field name"
     (signals http-invalid-header (make-http-header "" "x")))
