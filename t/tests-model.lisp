@@ -154,7 +154,21 @@
         (expect (http-request-stream-protocol-version request-stream)
                 :to-equalp "HTTP/1.9")
         (expect (http-response-stream-protocol-version response-stream)
-                :to-equalp "HTTP/1.9"))))
+                :to-equalp "HTTP/1.9")))
+  (it "retains aliased header names and returns independent header copies"
+    (let* ((name (copy-seq "X-Request"))
+           (request (make-http-request
+                     :method "GET"
+                     :uri "https://example.test/"
+                     :headers (list (make-http-header name "value"))))
+           (returned (first (http-request-headers request))))
+      (setf (char (http-header-name returned) 0) #\Y)
+      (expect name :to-equalp "X-Request")
+      (setf (char name 0) #\x)
+      (expect (http-header-name (first (http-request-headers request)))
+              :to-equalp "x-Request")
+      (setf (char name 0) #\Space)
+      (signals http-invalid-header (http-request-headers request)))))
 
 (describe "make-http-response"
   (it "keeps the status and body and supplies the registered reason"
@@ -287,7 +301,32 @@
                 :to-equalp t)
         (setf (char (http-response-protocol-version response) 7) #\9)
         (expect version :to-equalp "HTTP/1.9")
-        (expect (http-response-stream-protocol-version stream) :to-equalp "HTTP/1.9"))))
+        (expect (http-response-stream-protocol-version stream) :to-equalp "HTTP/1.9")))
+  (it "retains aliased header names and returns independent header copies"
+    (let* ((name (copy-seq "X-Response"))
+           (response (make-http-response
+                      :status 200
+                      :headers (list (make-http-header name "value"))))
+           (copy (http-header-copy (make-http-header name "value")))
+           (returned (first (http-response-headers response))))
+      (setf (char (http-header-name returned) 0) #\Y)
+      (expect name :to-equalp "X-Response")
+      (setf (char name 0) #\x)
+      (expect (http-header-name (first (http-response-headers response)))
+              :to-equalp "x-Response")
+      (expect (http-header-name copy) :to-equalp "X-Response")
+      (setf (char name 0) #\Space)
+      (signals http-invalid-header (http-response-headers response))))
+  (it "retains aliased header names through response streams"
+    (let* ((name (copy-seq "X-Stream"))
+           (response (make-http-response-stream
+                      :status 200
+                      :headers (list (make-http-header name "value")))))
+      (setf (char name 0) #\x)
+      (expect (http-header-name (first (http-response-stream-headers response)))
+              :to-equalp "x-Stream")
+      (setf (char name 0) #\Space)
+      (signals http-invalid-header (http-response-stream-headers response)))))
 (describe "HTTP message compatibility edge cases"
   (it "rejects content on TRACE requests while preserving method case"
     (signals http-protocol-error

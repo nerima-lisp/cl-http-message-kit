@@ -38,7 +38,7 @@
      :protocol-version (%validate-protocol-version protocol-version :response)
      :status status
      :reason (copy-seq (or reason (%default-reason status)))
-     :headers (%normalize-headers headers)
+     :headers (%normalize-headers headers :copy-name-p nil)
      :trailers normalized-trailers
      :body body-octets)))
 

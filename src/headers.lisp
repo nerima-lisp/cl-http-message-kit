@@ -95,9 +95,11 @@
                :name (http-header-name header)
                :reason :forbidden-trailer-field)))))
 
-(defun %copy-http-header (header)
+(defun %copy-http-header (header &key (copy-name-p t))
   (check-type header http-header)
-  (make-http-header (copy-seq (%header-name header))
+  (make-http-header (if copy-name-p
+                        (copy-seq (%header-name header))
+                        (%header-name header))
                     (%header-content header)
                     :pseudo-p (http-pseudo-header-p header)))
 
@@ -118,11 +120,12 @@
          :operation :header
          :reason :type))
 
-(defun %normalize-headers (headers)
+(defun %normalize-headers (headers &key (copy-name-p t))
   (unless (%proper-list-p headers)
     (%invalid-header-list))
   (mapcar (lambda (header)
-            (cond ((http-header-p header) (%copy-http-header header))
+            (cond ((http-header-p header)
+                   (%copy-http-header header :copy-name-p copy-name-p))
                   ((and (consp header) (stringp (car header)))
                    (let ((tail (cdr header)))
                      (cond ((stringp tail)
