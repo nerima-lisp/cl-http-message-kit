@@ -109,7 +109,7 @@
       (make-http-request :method "GET" :uri "https://example.test/"
                          :protocol "bad protocol")))
   (it "reports the original request target as the protocol error detail"
-    (dolist (code (list 0 9 10 13 31 32 127 128 256))
+    (dolist (code (list 0 9 10 13 31 32 127 128 #x100))
       (let* ((target (format nil "/~C" (code-char code)))
              (condition
                (handler-case
