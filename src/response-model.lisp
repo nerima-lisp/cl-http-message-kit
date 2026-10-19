@@ -24,14 +24,7 @@
            :line reason
            :code status))
   (let* ((body-octets (if body (%copy-octets body) (%empty-octets)))
-         (normalized-trailers (http-validate-trailers trailers)))
-    (when (and (%status-body-forbidden-p status nil)
-               (or (plusp (length body-octets))
-                   (plusp (length normalized-trailers))))
-      (error 'http-protocol-error
-             :message "This HTTP response status does not permit a body or trailers."
-             :operation :response
-             :detail status))
+         (normalized-trailers (%normalize-headers trailers)))
     (%make-http-response
      :protocol-version (%validate-protocol-version protocol-version :response)
      :status status
@@ -73,13 +66,6 @@
            :operation :response
            :detail (type-of body-function)))
   (%validate-body-length body-length :response)
-  (when (and (%status-body-forbidden-p status nil)
-             body-length
-             (plusp body-length))
-    (error 'http-protocol-error
-           :message "This HTTP response status does not permit a message body."
-           :operation :response
-           :detail status))
   (let ((response (make-http-response
                    :protocol-version protocol-version
                    :status status
@@ -92,8 +78,7 @@
      :reason (%response-reason response)
      :headers (%response-headers response)
      :trailers (%response-trailers response)
-     :body-function (and body-function
-                         (%wrap-body-function body-function body-length :response))
+     :body-function body-function
      :body-length body-length)))
 
 (defun http-response-stream-protocol-version (stream)
