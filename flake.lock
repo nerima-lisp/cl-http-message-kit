@@ -10,16 +10,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1792407167,
-        "narHash": "sha256-IyA70VY7Qj4wXGsxtGvhiH9/94n8/Yx/qBnl+3Rc7eI=",
+        "lastModified": 1792409839,
+        "narHash": "sha256-m6fGAnY5Xf5DjoJXkd0LilqPAqADMkIPgqQ8h1LYMl8=",
         "owner": "nerima-lisp",
         "repo": "cl-hpack-codec-kit",
-        "rev": "8b4e43227c8edf6ed85af88c7ed2fae3a74a5d06",
+        "rev": "52daf534f8554e4acbcbfdd992a09d3f136f39c6",
         "type": "github"
       },
       "original": {
         "owner": "nerima-lisp",
-        "ref": "v1.1.0",
+        "ref": "v1.1.1",
         "repo": "cl-hpack-codec-kit",
         "type": "github"
       }

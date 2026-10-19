@@ -5,7 +5,7 @@
   :author "nerima-lisp"
   :license "MIT"
   :version "1.0.0"
-  :depends-on ()
+  :depends-on ("cl-hpack-codec-kit")
   :pathname "src"
   :serial nil
   :components
@@ -67,8 +67,8 @@
    (:file "tests-http1" :depends-on ("package"))
    (:file "tests-qpack" :depends-on ("package"))
    (:file "runner" :depends-on ("package" "tests-uri" "tests-headers" "tests-model"
-                                        "tests-advanced" "tests-contracts" "tests-http2-3"
-                                        "tests-http1" "tests-qpack")))
+                                "tests-advanced" "tests-contracts" "tests-http2-3"
+                                "tests-http1" "tests-qpack")))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call "HTTP-MESSAGE-KIT/TEST" "RUN-TESTS")))

@@ -506,19 +506,20 @@ current capacity, as required by RFC 9204."
      (%qpack-error "QPACK fields must be HTTP-HEADER values or name/value pairs."
                    field))))
 
-(defun %qpack-valid-name-p (name)
-  (and (stringp name)
-       (plusp (length name))
-       (loop for character across name
-             for code = (char-code character)
-             for valid = (or (and (>= code (char-code #\a))
-                                  (<= code (char-code #\z)))
-                             (and (>= code (char-code #\0))
-                                  (<= code (char-code #\9)))
-                             (member character '(#\! #\# #\$ #\% #\& #\' #\* #\+
-                                                   #\- #\. #\^ #\_ #\` #\| #\~)
-                                     :test #'char=))
-             always valid)))
+(progn
+  (defun %qpack-codec-call (function &rest arguments)
+    (handler-case
+        (apply function arguments)
+      (hpack-codec:hpack-codec-error (condition)
+        (%qpack-error
+         (hpack-codec:hpack-codec-error-message condition)
+         (list :codec-operation
+               (hpack-codec:hpack-codec-error-operation condition)
+               :codec-detail
+               (hpack-codec:hpack-codec-error-detail condition))))))
+  (defun %qpack-valid-name-p (name)
+    (and (stringp name)
+         (hpack-codec:hpack-valid-header-name-p name))))
 
 (defun %qpack-normalize-name (name)
   (unless (stringp name)
@@ -540,18 +541,13 @@ current capacity, as required by RFC 9204."
   value)
 
 (defun %qpack-fields (fields)
-  (let ((regular-seen-p nil)
-        (result '()))
-    (dolist (field fields (nreverse result))
+  (let ((result '()))
+    (dolist (field fields)
       (let* ((pair (%qpack-field-pair field))
              (name (%qpack-normalize-name (car pair)))
              (value (%qpack-normalize-value (cdr pair))))
-        (if (char= (char name 0) #\:)
-            (when regular-seen-p
-              (%qpack-error "QPACK pseudo-fields must precede regular fields."
-                            name))
-            (setf regular-seen-p t))
-        (push (cons name value) result)))))
+        (push (cons name value) result)))
+    (nreverse result)))
 
 (defun %qpack-static-entry (index)
   (when (and (integerp index)
@@ -613,21 +609,24 @@ current capacity, as required by RFC 9204."
                   index))
   index)
 
-(defun %qpack-encode-string
-    (string &key (prefix-bits 7) (prefix 0) (huffman-p nil))
-  (let* ((octets (%octets-from-string string))
-         (encoded-octets
-           (if huffman-p
-               (%hpack-huffman-encode octets)
-               octets)))
-    (%qpack-concat
-     (%qpack-encode-integer
-      (length encoded-octets)
-      prefix-bits
-      (if huffman-p
-          (logior prefix (ash 1 prefix-bits))
-          prefix))
-     encoded-octets)))
+(progn
+  (defun %hpack-huffman-encode (octets)
+    (%qpack-codec-call #'hpack-codec:hpack-huffman-encode octets))
+  (defun %qpack-encode-string
+      (string &key (prefix-bits 7) (prefix 0) (huffman-p nil))
+    (let* ((octets (%octets-from-string string))
+           (encoded-octets
+             (if huffman-p
+                 (%hpack-huffman-encode octets)
+                 octets)))
+      (%qpack-concat
+       (%qpack-encode-integer
+        (length encoded-octets)
+        prefix-bits
+        (if huffman-p
+            (logior prefix (ash 1 prefix-bits))
+            prefix))
+       encoded-octets))))
 
 (defun qpack-encode-set-dynamic-table-capacity (capacity)
   "Encode a QPACK encoder-stream table-capacity instruction."
@@ -893,41 +892,6 @@ coding."
     (%qpack-commit-field-section registration)
     section))
 
-(defun %qpack-huffman-decoded-length (octets start end)
-  (let ((root (%hpack-huffman-root))
-        (node (%hpack-huffman-root))
-        (buffer 0)
-        (padding-bits 0)
-        (count 0))
-    (loop for position from start below end
-          for octet = (aref octets position)
-          do (loop for bit from 7 downto 0
-                   for one = (logbitp bit octet)
-                   do (setf node (if one
-                                     (hpack-huffman-node-one node)
-                                     (hpack-huffman-node-zero node)))
-                      (unless node
-                        (%hpack-error "HPACK Huffman code is invalid."))
-                      (let ((symbol (hpack-huffman-node-symbol node)))
-                        (if symbol
-                            (progn
-                              (when (= symbol 256)
-                                (%hpack-error
-                                 "HPACK Huffman EOS cannot appear in a string."))
-                              (incf count)
-                              (setf node root
-                                    buffer 0
-                                    padding-bits 0))
-                            (progn
-                              (setf buffer (logior (ash buffer 1)
-                                                   (if one 1 0)))
-                              (incf padding-bits))))))
-    (when (plusp padding-bits)
-      (unless (and (<= padding-bits 7)
-                   (= buffer (1- (ash 1 padding-bits))))
-        (%hpack-error "HPACK Huffman padding is invalid.")))
-    count))
-
 (defun %qpack-decode-string
     (octets position prefix-bits huffman-mask &optional max-decoded-bytes)
   (when (>= position (length octets))
@@ -937,32 +901,45 @@ coding."
                    (>= max-decoded-bytes 0)))
     (%qpack-error "QPACK decoded-string limits must be non-negative integers."
                   max-decoded-bytes))
-  (let ((huffman (/= 0 (logand (aref octets position) huffman-mask))))
+  (let ((maximum (or max-decoded-bytes
+                     +hpack-default-maximum-string-length+))
+        (huffman (/= 0 (logand (aref octets position) huffman-mask))))
     (multiple-value-bind (length next-position)
         (%qpack-decode-integer octets position prefix-bits)
       (let ((end (+ next-position length)))
         (when (> end (length octets))
           (%qpack-error "A QPACK string is truncated." length))
-        (when max-decoded-bytes
-          (let ((decoded-length
-                  (if huffman
-                      (%qpack-huffman-decoded-length
-                       octets next-position end)
-                      length)))
-            (when (> decoded-length max-decoded-bytes)
-              (error 'http-size-limit-exceeded
-                     :message "QPACK decoded string exceeds the configured header-size limit."
-                     :operation :qpack
-                     :limit max-decoded-bytes
-                     :observed decoded-length
-                     :kind :headers))))
-        (values
-         (%string-from-octets
-          (if huffman
-              (%hpack-huffman-decode
-               (subseq octets next-position end))
-              (subseq octets next-position end)))
-         end)))))
+        (http-check-size-limit length
+                               +hpack-default-maximum-string-length+
+                               :qpack-string)
+        (when (and (not huffman) (> length maximum))
+          (http-check-size-limit length maximum :qpack-string))
+        (let* ((payload
+                 (make-array length
+                             :element-type '(unsigned-byte 8)
+                             :displaced-to octets
+                             :displaced-index-offset next-position))
+               (decoded
+                 (if huffman
+                     (handler-case
+                         (hpack-codec:hpack-huffman-decode
+                          payload :maximum-length maximum)
+                       (hpack-codec:hpack-limit-error ()
+                         (error 'http-size-limit-exceeded
+                                :message "QPACK Huffman output exceeds its decoded-string limit."
+                                :operation :qpack
+                                :limit maximum
+                                :observed (1+ maximum)
+                                :kind :qpack-string))
+                       (hpack-codec:hpack-codec-error (condition)
+                         (%qpack-error
+                          (hpack-codec:hpack-codec-error-message condition)
+                          (list :codec-operation
+                                (hpack-codec:hpack-codec-error-operation condition)
+                                :codec-detail
+                                (hpack-codec:hpack-codec-error-detail condition)))))
+                     payload)))
+          (values (%string-from-octets decoded) end))))))
 
 (defun %qpack-effective-max-capacity (dynamic-table max-table-capacity)
   (let ((capacity (if max-table-capacity
@@ -1063,7 +1040,6 @@ QPACK-BLOCKED-FIELD-SECTION."
          (required-insert-count nil)
          (base nil)
          (fields '())
-         (regular-seen-p nil)
          (total-bytes 0))
     (multiple-value-setq (encoded-required-insert-count position)
       (%qpack-decode-integer octets position 8))
@@ -1111,12 +1087,6 @@ QPACK-BLOCKED-FIELD-SECTION."
                    (%qpack-error
                     "QPACK decoded field names must already be lowercase."
                     name))
-                 (if (char= (char normalized-name 0) #\:)
-                     (when regular-seen-p
-                       (%qpack-error
-                        "QPACK pseudo-fields must precede regular fields."
-                        normalized-name))
-                     (setf regular-seen-p t))
                  (when (>= (length fields) max-fields)
                    (error 'http-size-limit-exceeded
                           :message "QPACK field count exceeds the configured limit."
@@ -1246,35 +1216,47 @@ HTTP/3 transport."
                   (let ((static-p (/= 0 (logand first #x40))))
                     (multiple-value-bind (name-index next)
                         (%qpack-decode-integer octets position 6)
-                      (let ((entry
-                              (if static-p
-                                  (or (%qpack-static-entry name-index)
-                                      (%qpack-error
-                                       "QPACK static-table name index is out of range."
-                                       name-index))
-                                  (%qpack-dynamic-entry-at-relative
-                                   table name-index))))
+                      (let* ((entry
+                               (if static-p
+                                   (or (%qpack-static-entry name-index)
+                                       (%qpack-error
+                                        "QPACK static-table name index is out of range."
+                                        name-index))
+                                   (%qpack-dynamic-entry-at-relative
+                                    table name-index)))
+                             (name (if (qpack-dynamic-entry-p entry)
+                                       (qpack-dynamic-entry-name entry)
+                                       (first entry)))
+                             (capacity (qpack-dynamic-table-capacity table))
+                             (maximum-value-length
+                               (max 0
+                                    (- capacity 32
+                                       (length (%octets-from-string name))))))
                         (multiple-value-bind (value after-value)
-                            (%qpack-decode-string octets next 7 #x80)
+                            (%qpack-decode-string
+                             octets next 7 #x80 maximum-value-length)
                           (let ((inserted
                                   (qpack-dynamic-table-insert
-                                   table
-                                   (if (qpack-dynamic-entry-p entry)
-                                       (qpack-dynamic-entry-name entry)
-                                       (first entry))
-                                   value)))
+                                   table name value)))
                             (push (list :insert inserted) events)
                             (setf position after-value)))))))
                  ((= (logand first #xc0) #x40)
-                  (multiple-value-bind (name next)
-                      (%qpack-decode-string octets position 5 #x20)
-                    (let ((name (%qpack-validate-raw-name name)))
-                      (multiple-value-bind (value after-value)
-                          (%qpack-decode-string octets next 7 #x80)
-                        (let ((inserted
-                                (qpack-dynamic-table-insert table name value)))
-                          (push (list :insert inserted) events)
-                          (setf position after-value))))))
+                  (let ((capacity (qpack-dynamic-table-capacity table)))
+                    (multiple-value-bind (name next)
+                        (%qpack-decode-string
+                         octets position 5 #x20 (max 0 (- capacity 32)))
+                      (let* ((name (%qpack-validate-raw-name name))
+                             (maximum-value-length
+                               (max 0
+                                    (- capacity 32
+                                       (length (%octets-from-string name))))))
+                        (multiple-value-bind (value after-value)
+                            (%qpack-decode-string
+                             octets next 7 #x80 maximum-value-length)
+                          (let ((inserted
+                                  (qpack-dynamic-table-insert table name value)))
+                            (push (list :insert inserted) events)
+                            (setf position after-value)))))))
                  (t
                   (multiple-value-bind (relative-index next)
                       (%qpack-decode-integer octets position 5)
@@ -1290,24 +1272,27 @@ HTTP/3 transport."
     (values (nreverse events) position)))
 
 (defun %qpack-encoder-instruction-end (octets position)
-  (let ((first (aref octets position)))
-    (cond
-      ((= (logand first #xe0) #x20)
-       (nth-value 1
-                  (%qpack-decode-integer octets position 5)))
-      ((/= 0 (logand first #x80))
-       (multiple-value-bind (name-index next)
-           (%qpack-decode-integer octets position 6)
-         (declare (ignore name-index))
-         (nth-value 1 (%qpack-decode-string octets next 7 #x80))))
-      ((= (logand first #xc0) #x40)
-       (multiple-value-bind (name next)
-           (%qpack-decode-string octets position 5 #x20)
-         (declare (ignore name))
-         (nth-value 1 (%qpack-decode-string octets next 7 #x80))))
-      (t
-       (nth-value 1
-                  (%qpack-decode-integer octets position 5))))))
+  (labels ((skip-string (start prefix-bits)
+             (multiple-value-bind (length payload-start)
+                 (%qpack-decode-integer octets start prefix-bits)
+               (let ((end (+ payload-start length)))
+                 (when (> end (length octets))
+                   (%qpack-error "A QPACK string is truncated." length))
+                 end))))
+    (let ((first (aref octets position)))
+      (cond
+        ((= (logand first #xe0) #x20)
+         (nth-value 1 (%qpack-decode-integer octets position 5)))
+        ((/= 0 (logand first #x80))
+         (multiple-value-bind (name-index next)
+             (%qpack-decode-integer octets position 6)
+           (declare (ignore name-index))
+           (skip-string next 7)))
+        ((= (logand first #xc0) #x40)
+         (skip-string (skip-string position 5) 7))
+        (t
+         (nth-value 1
+                    (%qpack-decode-integer octets position 5)))))))
 
 (defun %qpack-truncated-error-p (condition)
   (and (typep condition 'http-protocol-error)
@@ -1494,20 +1479,15 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
                  (zerop (logand prefix-value mask)))
       (%qpack-error "QPACK integer prefix value overlaps the integer bits."
                     prefix-value))
-    (if (< integer mask)
-        (vector (logior prefix-value integer))
-        (let ((bytes (list (logior prefix-value mask)))
-              (remaining (- integer mask)))
-          (loop while (>= remaining 128)
-                do (push (logior #x80 (logand remaining #x7f)) bytes)
-                   (setf remaining (ash remaining -7)))
-          (push remaining bytes)
-          (coerce (nreverse bytes) '(vector (unsigned-byte 8)))))))
+    (%qpack-codec-call
+     #'hpack-codec:hpack-encode-integer
+     integer prefix-bits prefix-value
+     :maximum +qpack-max-integer+)))
 
 (defun %qpack-decode-integer (octets &optional (start 0) (prefix-bits 8) end)
   (unless (%octet-vector-p octets)
     (%qpack-error "QPACK integer input must be an octet vector." (type-of octets)))
-  (let ((limit (or end (length octets))))
+  (let ((limit (if (null end) (length octets) end)))
     (unless (and (integerp start) (<= 0 start)
                  (integerp limit) (<= start limit (length octets)))
       (%qpack-error "QPACK integer bounds are outside the input."
@@ -1517,34 +1497,23 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
                     prefix-bits))
     (when (= start limit)
       (%qpack-error "QPACK integer is truncated." start))
-    (let* ((mask (1- (ash 1 prefix-bits)))
-           (first (aref octets start))
-           (value (logand first mask))
-           (position (1+ start)))
-      (if (< value mask)
-          (values value position)
-          (let ((shift 0))
-            (loop for continuation from 0 below 9
-                  do (when (= position limit)
-                       (%qpack-error "QPACK integer is truncated." position))
-                     (let* ((byte (aref octets position))
-                            (payload (logand byte #x7f)))
-                       (incf value (ash payload shift))
-                       (incf position)
-                       (when (> value +qpack-max-integer+)
-                         (%qpack-error "QPACK integer exceeds the 62-bit domain."
-                                       value))
-                       (when (zerop (logand byte #x80))
-                         (return (values value position)))
-                       (when (= continuation 8)
-                         (%qpack-error
-                          "QPACK integer continuation exceeds the bounded width."
-                          position))
-                       (incf shift 7))))))))
+    (let* ((window-end (min limit (+ start 10)))
+           (window
+             (make-array (- window-end start)
+                         :element-type '(unsigned-byte 8)
+                         :displaced-to octets
+                         :displaced-index-offset start)))
+      (multiple-value-bind (value next)
+          (%qpack-codec-call
+           #'hpack-codec:hpack-read-integer
+           window 0 prefix-bits :maximum +qpack-max-integer+)
+        (values value (+ start next))))))
 
 (defun %qpack-validate-raw-name (name)
-  (unless (and (stringp name) (string= name (string-downcase name)))
-    (%qpack-error "QPACK encoder-stream field names must be lowercase." name))
+  (unless (%qpack-valid-name-p name)
+    (%qpack-error
+     "QPACK encoder-stream field names must be lowercase HTTP token names."
+     name))
   (%qpack-normalize-name name))
 
 (defstruct (qpack-context (:constructor %make-qpack-context)) max-table-capacity max-blocked-streams max-header-list-size huffman-p dynamic-table decoder-stream-state blocked-streams)
