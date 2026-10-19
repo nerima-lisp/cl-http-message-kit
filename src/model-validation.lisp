@@ -8,7 +8,7 @@
            :message "HTTP protocol version is unsupported."
            :operation operation
            :detail version))
-  (copy-seq version))
+  version)
 
 (defun %validate-body-length (body-length operation)
   (unless (or (null body-length)
