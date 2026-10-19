@@ -34,7 +34,7 @@
             :method (copy-seq method)
             :uri (%coerce-uri uri)
             :target (%copy-string-or-nil request-target)
-            :headers (%normalize-headers headers)
+            :headers (%normalize-headers headers :copy-name-p nil)
             :trailers normalized-trailers
             :body (if body (%copy-octets body) (%empty-octets)))))
     (when (and (string= method "TRACE")
