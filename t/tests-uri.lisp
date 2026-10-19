@@ -66,13 +66,16 @@
       (signals http-invalid-uri
         (setf (http-uri-path uri) "/bad#fragment"))))
 
-  (it "accepts IPv4, IPv6, IPvFuture, and zone identifiers"
+  (it "accepts IPv4, IPv6, and IPvFuture authorities and rejects zone identifiers"
     (dolist (input '("http://127.0.0.1:8080/"
                      "http://[2001:db8::1]/"
-                     "http://[v1.fe80]/"
-                     "http://[fe80::1%25eth0]/"
-                     "http://[fe80::1%25eth0%2Fwan]/"))
-      (expect (http-uri-p (parse-http-uri input)) :to-equalp t)))
+                     "http://[v1.fe80]/"))
+      (expect (http-uri-p (parse-http-uri input)) :to-equalp t))
+    (dolist (authority '("[fe80::1%25eth0]"
+                          "[fe80::1%25eth0%2Fwan]"))
+      (signals http-invalid-uri (make-http-uri :authority authority))
+      (signals http-invalid-uri
+        (parse-http-uri (concatenate 'string "http://" authority "/")))))
 
   (it "rejects malformed authority and URI components"
     (dolist (input '("http://01.2.3.4/"

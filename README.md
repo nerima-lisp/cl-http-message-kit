@@ -150,12 +150,12 @@ calls:
 ## Design notes
 
 URI construction validates HTTP(S) schemes, authority syntax, IPv4, IPv6,
-IPvFuture, percent escapes, request-safe characters, and the RFC 6874
-percent-encoded IPv6 zone-id form. Scheme and host are normalized to lowercase,
-while callers receive copied strings. An absent port stays absent rather than
-being filled in from the scheme. The default belongs to whoever opens the
-connection, and storing it in the value would make two URIs that differ only in
-an implied port compare unequal.
+IPvFuture, percent escapes, and request-safe characters. IPv6 zone identifiers
+are not supported. Scheme and host are normalized to lowercase, while callers
+receive copied strings. An absent port stays absent rather than being filled
+in from the scheme. The default belongs to whoever opens the connection, and
+storing it in the value would make two URIs that differ only in an implied
+port compare unequal.
 
 When no explicit target is supplied, `http-request-target` derives the
 origin-form target — path and query only — from the URI. An explicit target is
