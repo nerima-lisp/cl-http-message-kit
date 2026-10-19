@@ -97,6 +97,7 @@
                :message "HTTP request-line method or target is invalid."
                :operation :http1-parse
                :detail line))
+      (%validate-request-target target)
       (values method target (%validate-protocol-version version :request)))))
 
 (defun %parse-response-line (line)
@@ -349,6 +350,10 @@
       (%framing-error :transfer-encoding-on-bodyless-response))
     (when (and tunnel-p (plusp body-length))
       (%framing-error :body-on-connect-tunnel))
+    (when (and (not request-p)
+               (%status-body-forbidden-p status nil)
+               (plusp body-length))
+      (%framing-error :body-on-bodyless-response))
     (when (and (not request-p) forbidden-p has-trailers)
       (%framing-error :trailers-on-bodyless-response))
     (when (and (not (string= protocol-version "HTTP/1.1"))
@@ -358,9 +363,10 @@
                (not forbidden-p))
       (%framing-error (list :content-length-mismatch content-length body-length)))
     (when (and (or has-trailers transfer-values)
-                 (not forbidden-p)
-                 (or (null transfer-values)
-                   (not (equal (%transfer-coding-values normalized) '("chunked")))))
+               (not forbidden-p)
+               (or (null transfer-values)
+                   (not (equal (%transfer-coding-values normalized)
+                               (list "chunked")))))
       (error 'http-unsupported-feature
              :message "Only a final HTTP/1 chunked transfer-coding is supported."
              :operation :http1-encode
@@ -410,7 +416,8 @@
              :message "HTTP/1 serialization requires an HTTP/1 protocol version."
              :operation :http1-encode
              :feature version))
-    (let* ((body (http-request-body request))
+    (let* ((target (%validate-request-target (http-request-target request)))
+           (body (http-request-body request))
            (trailers (http-request-trailers request))
            (headers (%http1-effective-headers
                      (http-request-headers request)
@@ -420,7 +427,7 @@
        (%octets-from-string
         (format nil "~A ~A ~A~C~C"
                 (http-request-method request)
-                (http-request-target request)
+                target
                 version #\return #\linefeed)
         :ascii-only t)
        (%headers-wire-octets headers)

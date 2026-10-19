@@ -159,21 +159,31 @@ an implied port compare unequal.
 
 When no explicit target is supplied, `http-request-target` derives the
 origin-form target — path and query only — from the URI. An explicit target is
-validated and preserved as one of the four HTTP forms: origin, absolute,
-authority, or asterisk. `http-request-target-form` exposes that classification.
+copied after checking for visible ASCII. Its form-specific syntax is checked by
+the HTTP/1 parser on input, by serializers before output, or by header-section
+validators before encoding or after decoding a section.
+`http-request-target-form` reports its apparent form. `make-http-uri` also
+accepts a symbol as its scheme and treats the symbol name as a string.
 
-The request and response stream values wrap chunk-producing functions. Chunks
-are copied and checked as octets; a declared body length rejects overflow and
-an early end. `http-check-size-limit` provides the same bounded accounting for
-transport adapters without imposing a transport-specific default.
+Request stream values wrap chunk-producing functions, copy returned chunks as
+octets, and check them against a declared body length. Response stream values
+retain the supplied body function; the transport adapter that consumes it checks
+chunk types and the declared length. Both constructors still check stream
+arguments. `http-check-size-limit` provides bounded accounting for transport
+adapters without imposing a transport-specific default.
 
 `http-body-cps` turns a chunk-producing body function into an explicit
 continuation flow. It does not perform I/O or retain chunks, so a transport can
 choose its own scheduling, backpressure, and resource lifetime around the
 message model.
 
-Validation happens at construction. A request or response value that exists is
-one that passed its checks, so downstream code does not re-validate.
+Constructors validate and copy model-owned fields. Request-target form syntax,
+status-specific body rules, and prohibited trailer names are checked at the
+parser, serializer, or protocol boundary that has the relevant wire context.
+Header field accessors expose their stored values, and their setters store and
+return the assigned value as-is. Message constructors still copy and revalidate
+headers, and request and response accessors return copies of each header, so
+direct edits to a standalone header do not alter a stored message.
 
 `http-message-framing` classifies a request or response by RFC 9112 message
 framing rules (content-length, chunked, close-delimited, tunnel, or no body)
@@ -184,7 +194,9 @@ a body still declaring one.
 The HTTP/1 codec serializes the message model to wire octets and back.
 Serialization derives the framing header (Host, Content-Length, or
 Transfer-Encoding) from the message rather than trusting caller-supplied
-values, and rejects a message whose headers already conflict with its body.
+values, and rejects a message whose headers already conflict with its body. It
+also rejects bodies and trailers for statuses that cannot carry them, and
+checks trailer field names when encoding or decoding a trailer section.
 `make-http1-parser` provides an incremental parser for a transport that
 receives octets in arbitrary-sized reads: `http1-parser-feed` accepts each
 read and reports completion, an unconsumed remainder, or that more input is
@@ -194,7 +206,10 @@ The HTTP/2 and HTTP/3 codecs cover frame and settings encoding/decoding
 (`http2-encode-frame`, `http3-decode-frame`, and their settings
 counterparts) and pseudo-header section validation
 (`http-validate-header-section`), including the extended-CONNECT and
-trailer-section forms both protocols define. HPACK block encoding and
+trailer-section forms both protocols define. Their header-section validators
+check request-target syntax and reject prohibited trailer fields; message body
+rules remain the responsibility of the transport adapter that writes DATA
+frames. HPACK block encoding and
 decoding, static and dynamic table handling, and Huffman coding use
 `cl-hpack-codec-kit`. QPACK also uses that kit's Huffman, integer, and
 header-name validation primitives while retaining the RFC 9204 encoder/decoder

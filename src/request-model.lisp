@@ -15,8 +15,9 @@
            :operation :request
            :detail protocol))
   (when request-target
-    (%validate-request-target request-target))
-  (let* ((normalized-trailers (http-validate-trailers trailers))
+    (unless (%request-target-value-p request-target)
+      (%request-target-error request-target :characters)))
+  (let* ((normalized-trailers (%normalize-headers trailers))
          (request
            (%make-http-request
             :protocol-version (%validate-protocol-version protocol-version :request)

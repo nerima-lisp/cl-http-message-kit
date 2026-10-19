@@ -258,8 +258,14 @@
                         :test #'string=)
           (%header-section-error protocol (car item) :unknown-pseudo-header)))
       (if trailers-p
-          (when pseudo
-            (%header-section-error protocol (caar pseudo) :pseudo-in-trailers))
+          (progn
+            (when pseudo
+              (%header-section-error protocol (caar pseudo) :pseudo-in-trailers))
+            (dolist (header normalized)
+              (unless (http-trailer-field-p header)
+                (%header-section-error protocol
+                                       (http-header-name header)
+                                       :forbidden-trailer-field))))
           (if request-p
               (progn
                 (when status
@@ -279,7 +285,10 @@
                               (and (plusp (length path))
                                    (char= (char path 0) #\/)
                                    (not (find #\# path))))
-                    (%header-section-error protocol ":path" :value)))
+                    (%header-section-error protocol ":path" :value))
+                  (handler-case (%validate-request-target path)
+                    (http-protocol-error ()
+                      (%header-section-error protocol ":path" :value))))
                 (if (http-method-connect-p method)
                     (if protocol-name
                         (unless (and scheme path authority

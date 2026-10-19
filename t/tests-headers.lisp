@@ -22,31 +22,54 @@
     (signals http-invalid-header
       (make-http-header "X-Value" (format nil "bad~Cvalue" #\Newline))))
 
-  (it "returns independent strings and validates header setters"
+  (it "exposes raw header values and keeps request copies isolated"
     (let* ((header (make-http-header "X-Value" "value"))
-           (name (http-header-name header))
-           (content (http-header-content header))
            (copy (http-header-copy header))
+           (request (make-http-request :method "GET"
+                                       :uri "https://example.test/"
+                                       :headers (list header)))
            (new-name (copy-seq "X-Updated"))
            (new-content (copy-seq "updated")))
-      (setf (char name 0) #\x
-            (char content 0) #\X)
-      (expect (http-header-name header) :to-equalp "X-Value")
-      (expect (http-header-content header) :to-equalp "value")
-      (setf (http-header-name header) new-name
-            (http-header-content header) new-content)
+      (expect (eq (setf (http-header-name header) new-name) new-name)
+              :to-equalp t)
+      (expect (eq (http-header-name header) new-name) :to-equalp t)
+      (expect (eq (setf (http-header-content header) new-content) new-content)
+              :to-equalp t)
+      (expect (eq (http-header-content header) new-content) :to-equalp t)
       (setf (char new-name 0) #\x
-            (char new-content 0) #\X)
-      (expect (http-header-name header) :to-equalp "X-Updated")
-      (expect (http-header-content header) :to-equalp "updated")
-      (expect (http-header-value (list header) "x-updated") :to-equalp "updated")
+            (char new-content 0) #\U)
+      (expect (http-header-name header) :to-equalp "x-Updated")
+      (expect (http-header-content header) :to-equalp "Updated")
+      (expect (http-header-value (list header) "x-updated")
+              :to-equalp "Updated")
       (expect (http-header-name copy) :to-equalp "X-Value")
       (expect (http-header-content copy) :to-equalp "value")
+      (let ((exposed (first (http-request-headers request))))
+        (expect (http-header-name exposed) :to-equalp "X-Value")
+        (expect (http-header-content exposed) :to-equalp "value")
+        (setf (char (http-header-name exposed) 0) #\x
+              (char (http-header-content exposed) 0) #\X)
+        (expect (http-header-name (first (http-request-headers request)))
+                :to-equalp "X-Value")
+        (expect (http-header-content (first (http-request-headers request)))
+                :to-equalp "value"))
+      (let ((invalid-name "bad name"))
+        (expect (eq (setf (http-header-name header) invalid-name) invalid-name)
+                :to-equalp t)
+        (expect (eq (http-header-name header) invalid-name) :to-equalp t)
+        (signals http-invalid-header
+          (make-http-request :method "GET"
+                             :uri "https://example.test/"
+                             :headers (list header))))
+      (setf (http-header-name header) "X-Updated")
+      (expect (eql (setf (http-header-content header) 7) 7) :to-be-truthy)
+      (expect (eql (http-header-content header) 7) :to-be-truthy)
       (signals http-invalid-header
-        (setf (http-header-name header) "bad name"))
-      (signals http-invalid-header
-        (setf (http-header-content header)
-              (format nil "bad~Cvalue" #\Newline))))))
+        (make-http-request :method "GET"
+                           :uri "https://example.test/"
+                           :headers (list header)))
+      (setf (http-header-content header) "updated")
+      (expect (http-header-content header) :to-equalp "updated"))))
 
 (describe "header lookup"
   (it "finds a value regardless of the case asked for"
