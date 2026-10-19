@@ -80,7 +80,7 @@
       (expect (http-request-target request) :to-equalp "/path?")
       (expect (http-request-target-form request) :to-equalp :origin)))
 
-  (it "validates methods, targets, and protocol versions"
+  (it "validates methods, targets, protocols, and protocol versions"
     (signals http-protocol-error
       (make-http-request :method "bad method" :uri "https://example.test/"))
     (signals http-protocol-error
@@ -88,7 +88,24 @@
                          :request-target "bad target"))
     (signals http-protocol-error
       (make-http-request :method "GET" :uri "https://example.test/"
-                         :protocol-version "HTTP/9")))
+                         :protocol-version "HTTP/9"))
+    (let* ((protocol (copy-seq "WebSocket"))
+           (request (make-http-request :method "GET"
+                                       :uri "https://example.test/"
+                                       :protocol protocol))
+           (returned (http-request-protocol request)))
+      (setf (char protocol 0) #\x
+            (char returned 0) #\x)
+      (expect (http-request-protocol request) :to-equalp "websocket"))
+    (expect (http-request-protocol
+             (make-http-request :method "GET" :uri "https://example.test/"))
+            :to-equalp nil)
+    (signals http-protocol-error
+      (make-http-request :method "GET" :uri "https://example.test/"
+                         :protocol 42))
+    (signals http-protocol-error
+      (make-http-request :method "GET" :uri "https://example.test/"
+                         :protocol "bad protocol")))
 
   (it "accepts the supported HTTP protocol versions"
     (dolist (version '("HTTP/1.0" "HTTP/1.1" "HTTP/2" "HTTP/3"))
@@ -206,10 +223,14 @@
       (with-http-deadline (deadline 0 :clock-function (lambda () 1) :kind :read)
         deadline)))
 
-  (it "rejects invalid stream arguments"
+  (it "accepts a missing response body function and rejects invalid stream arguments"
     (signals http-protocol-error
       (make-http-request-stream :method "GET" :uri "https://example.test/"
                                 :body-function nil))
+    (let ((response (make-http-response-stream :status 200 :body-function nil)))
+      (expect (http-response-stream-body-function response) :to-equalp nil))
+    (signals http-protocol-error
+      (make-http-response-stream :status 200 :body-function :invalid))
     (signals http-protocol-error
       (make-http-response-stream :status 200 :body-function (lambda () nil)
                                  :body-length -1))))

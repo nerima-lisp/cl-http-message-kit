@@ -235,4 +235,4 @@
    #:http-qpack-blocked
    #:http-qpack-blocked-required-insert-count
    #:http-qpack-blocked-available-insert-count
-   #:http-qpack-blocked-stream-id))
+   #:http-qpack-blocked-stream-id #:http-request-protocol))

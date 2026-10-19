@@ -15,9 +15,27 @@
   (check-type header http-header)
   (copy-seq (%header-name header)))
 
+(defun (setf http-header-name) (name header)
+  (check-type header http-header)
+  (let ((updated (make-http-header
+                  name
+                  (%header-content header)
+                  :pseudo-p (%pseudo-header-name-p name))))
+    (setf (%header-name header) (%header-name updated))
+    name))
+
 (defun http-header-content (header)
   (check-type header http-header)
   (copy-seq (%header-content header)))
+(defun (setf http-header-content) (content header)
+  (check-type header http-header)
+  (let ((updated (make-http-header
+                  (%header-name header)
+                  content
+                  :pseudo-p (http-pseudo-header-p header))))
+    (setf (%header-content header)
+          (copy-seq (%header-content updated)))
+    content))
 
 (defun http-pseudo-header-p (header)
   (and (http-header-p header)
@@ -61,7 +79,7 @@
   (%make-http-header :name (if pseudo-p
                                (concatenate 'string ":"
                                             (%ascii-lowercase (subseq name 1)))
-                               (%ascii-lowercase name))
+                               (copy-seq name))
                      :content (%trim-ows content)))
 
 (defun make-http-pseudo-header (name content)

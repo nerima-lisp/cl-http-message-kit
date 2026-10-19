@@ -67,7 +67,7 @@
 (defun make-http-response-stream
     (&key status reason headers trailers body-function body-length
           (protocol-version "HTTP/1.1"))
-  (unless (functionp body-function)
+  (unless (or (null body-function) (functionp body-function))
     (error 'http-protocol-error
            :message "HTTP response stream body-function must be a function."
            :operation :response
@@ -92,7 +92,8 @@
      :reason (%response-reason response)
      :headers (%response-headers response)
      :trailers (%response-trailers response)
-     :body-function (%wrap-body-function body-function body-length :response)
+     :body-function (and body-function
+                         (%wrap-body-function body-function body-length :response))
      :body-length body-length)))
 
 (defun http-response-stream-protocol-version (stream)

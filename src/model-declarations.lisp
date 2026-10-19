@@ -3,6 +3,7 @@
 (defstruct (http-request (:constructor %make-http-request)
                          (:conc-name %request-))
   protocol-version
+  protocol
   method
   uri
   target

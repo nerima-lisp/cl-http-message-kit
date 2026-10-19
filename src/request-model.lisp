@@ -1,18 +1,25 @@
 (in-package #:http-message-kit)
 
 (defun make-http-request
-    (&key method uri request-target headers trailers body
+    (&key method protocol uri request-target headers trailers body
           (protocol-version "HTTP/1.1"))
   (unless (and (stringp method) (%token-p method))
     (error 'http-protocol-error
            :message "HTTP request methods must be non-empty tokens."
            :operation :request
            :detail method))
+  (when (and protocol
+             (not (and (stringp protocol) (%token-p protocol))))
+    (error 'http-protocol-error
+           :message "HTTP request protocols must be non-empty tokens."
+           :operation :request
+           :detail protocol))
   (when request-target
     (%validate-request-target request-target))
   (let ((normalized-trailers (http-validate-trailers trailers)))
     (%make-http-request
      :protocol-version (%validate-protocol-version protocol-version :request)
+     :protocol (and protocol (%ascii-lowercase protocol))
      :method (copy-seq method)
      :uri (%coerce-uri uri)
      :target (%copy-string-or-nil request-target)
@@ -23,6 +30,10 @@
 (defun http-request-protocol-version (request)
   (check-type request http-request)
   (copy-seq (%request-protocol-version request)))
+
+(defun http-request-protocol (request)
+  (check-type request http-request)
+  (%copy-string-or-nil (%request-protocol request)))
 
 (defun http-request-method (request)
   (check-type request http-request)

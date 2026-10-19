@@ -1,11 +1,9 @@
 (in-package #:http-message-kit/test)
 
 (describe "make-http-header"
-  ;; Field names are case-insensitive on the wire, so they are normalised once
-  ;; at construction and every later comparison is a plain string compare.
-  (it "downcases the field name and keeps the content verbatim"
+  (it "preserves field-name case"
     (let ((header (make-http-header "Content-Type" "text/plain")))
-      (expect (http-header-name header) :to-equalp "content-type")
+      (expect (http-header-name header) :to-equalp "Content-Type")
       (expect (http-header-content header) :to-equalp "text/plain")))
 
   (it "rejects an empty field name"
@@ -24,16 +22,31 @@
     (signals http-invalid-header
       (make-http-header "X-Value" (format nil "bad~Cvalue" #\Newline))))
 
-  (it "copies its public strings and supports explicit copies"
+  (it "returns independent strings and validates header setters"
     (let* ((header (make-http-header "X-Value" "value"))
            (name (http-header-name header))
            (content (http-header-content header))
-           (copy (http-header-copy header)))
-      (setf (char name 0) #\X)
-      (setf (char content 0) #\X)
-      (expect (http-header-name header) :to-equalp "x-value")
+           (copy (http-header-copy header))
+           (new-name (copy-seq "X-Updated"))
+           (new-content (copy-seq "updated")))
+      (setf (char name 0) #\x
+            (char content 0) #\X)
+      (expect (http-header-name header) :to-equalp "X-Value")
       (expect (http-header-content header) :to-equalp "value")
-      (expect (http-header-name copy) :to-equalp "x-value"))))
+      (setf (http-header-name header) new-name
+            (http-header-content header) new-content)
+      (setf (char new-name 0) #\x
+            (char new-content 0) #\X)
+      (expect (http-header-name header) :to-equalp "X-Updated")
+      (expect (http-header-content header) :to-equalp "updated")
+      (expect (http-header-value (list header) "x-updated") :to-equalp "updated")
+      (expect (http-header-name copy) :to-equalp "X-Value")
+      (expect (http-header-content copy) :to-equalp "value")
+      (signals http-invalid-header
+        (setf (http-header-name header) "bad name"))
+      (signals http-invalid-header
+        (setf (http-header-content header)
+              (format nil "bad~Cvalue" #\Newline))))))
 
 (describe "header lookup"
   (it "finds a value regardless of the case asked for"
@@ -55,13 +68,13 @@
       (expect (http-header-values headers "accept")
               :to-equalp (list "text/plain" "text/html"))))
 
-  (it "normalises name/value pairs and preserves their order"
+  (it "accepts name/value pairs case-insensitively and preserves order"
     (let ((headers (list (cons "X-Trace" "one")
                          (list "x-trace" "two"))))
       (expect (http-header-values headers "X-TRACE")
               :to-equalp (list "one" "two"))))
 
-  (it "rejects malformed header lists"
+  (it "rejects malformed value pairs and improper header lists"
     (signals http-invalid-header
       (http-header-values (list (cons "X-Trace" (list "one" "two")))
                           "x-trace"))
