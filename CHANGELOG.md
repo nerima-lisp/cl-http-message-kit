@@ -29,6 +29,8 @@
   the declared body length. Function and body-length arguments remain checked
   by the constructor.
 - `make-http-uri` accepts a symbol scheme and treats its name as a string.
+- `make-http-uri` and `parse-http-uri` reject RFC 6874 IPv6 zone identifiers,
+  such as `[fe80::1%25en0]`.
 - Add the `cl-hpack-codec-kit` source directory to `CL_SOURCE_REGISTRY` beside
   this checkout, or use `nix develop`, which configures both systems.
 - QPACK now obtains its shared Huffman, integer, and header-name validation

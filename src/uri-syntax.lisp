@@ -119,28 +119,9 @@
                      (char= character #\:)))
                 (subseq literal (1+ dot))))))
 
-(defun %zone-id-p (zone-id)
-  (loop with index = 0
-        while (< index (length zone-id))
-        do (let ((character (char zone-id index)))
-             (cond ((%uri-unreserved-p character)
-                    (incf index))
-                   ((and (char= character #\%)
-                         (< (+ index 2) (length zone-id))
-                         (%hex-character-p (char zone-id (1+ index)))
-                         (%hex-character-p (char zone-id (+ index 2))))
-                    (incf index 3))
-                   (t (return nil))))
-        finally (return t)))
-
 (defun %ipv6-literal-p (literal)
-  (let ((zone-start (search "%25" literal :test #'char-equal)))
-    (if zone-start
-        (and (plusp (- (length literal) (+ zone-start 3)))
-             (%zone-id-p (subseq literal (+ zone-start 3)))
-             (%ipv6-address-p (subseq literal 0 zone-start)))
-        (or (%ipv6-address-p literal)
-            (%ipvfuture-p literal)))))
+  (or (%ipv6-address-p literal)
+      (%ipvfuture-p literal)))
 
 (defun %authority-port (text start input)
   (let ((port-text (subseq text start)))
