@@ -177,11 +177,12 @@ continuation flow. It does not perform I/O or retain chunks, so a transport can
 choose its own scheduling, backpressure, and resource lifetime around the
 message model.
 
-Protocol-version constructors validate and retain supplied strings. Request,
-response, request-stream, and response-stream protocol-version accessors return
-the stored string directly. Mutations to a supplied string are visible through
-every value that shares it; pass `(copy-seq version)` when you need an
-independent version value.
+Protocol-version constructors accept only `HTTP/1.0`, `HTTP/1.1`, `HTTP/2`,
+and `HTTP/3`, and retain the supplied string. Request, response, request-stream,
+and response-stream protocol-version accessors return the stored string
+directly. Mutations to a supplied string are visible through every value that
+shares it; pass `(copy-seq version)` when you need an independent version
+value. This sharing applies only to protocol-version strings.
 
 Request-target form syntax, status-specific body rules, and prohibited trailer
 names are checked at the parser, serializer, or protocol boundary that has the
