@@ -66,9 +66,11 @@
    (:file "tests-http1" :depends-on ("package"))
    (:file "tests-hpack" :depends-on ("package"))
    (:file "tests-qpack" :depends-on ("package"))
+   (:file "tests-p4a-contracts" :depends-on ("package"))
    (:file "runner" :depends-on ("package" "tests-uri" "tests-headers" "tests-model"
                                 "tests-advanced" "tests-contracts" "tests-http2-3"
-                                "tests-http1" "tests-hpack" "tests-qpack")))
+                                "tests-http1" "tests-hpack" "tests-qpack"
+                                "tests-p4a-contracts")))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call "HTTP-MESSAGE-KIT/TEST" "RUN-TESTS")))

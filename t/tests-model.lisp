@@ -57,15 +57,17 @@
                                   :request-target "example.test:443"))
               :to-equalp :authority)))
 
-  (it "validates request-target syntax and exposes stream target forms"
-    (dolist (target '("/path#fragment"
-                      "https://example.test/path#fragment"
-                      "example.test"
-                      "example.test:not-a-port"))
-      (signals http-protocol-error
-        (make-http-request :method "GET"
-                           :uri "https://example.test/"
-                           :request-target target)))
+  (it "accepts visible targets and defers form validation to HTTP/1"
+    (dolist (target (list "/path#fragment"
+                          "https://example.test/path#fragment"
+                          "example.test"
+                          "example.test:not-a-port"))
+      (let ((request (make-http-request :method "GET"
+                                        :uri "https://example.test/"
+                                        :request-target target)))
+        (expect (http-request-target request) :to-equalp target)
+        (signals http-protocol-error
+          (http1-serialize-request request))))
     (let ((stream (make-http-request-stream
                    :method "CONNECT"
                    :uri "https://example.test/"
@@ -199,15 +201,16 @@
       (signals http-protocol-error
         (funcall (http-request-stream-body-function request)))))
 
-  (it "streams a response body and validates overflow"
-    (let* ((chunks (list (octets 79 75) (octets 33) nil))
+  (it "preserves the original response stream body function"
+    (let* ((producer (lambda () (octets 79 75)))
            (response (make-http-response-stream
                       :status 200
                       :body-length 2
-                      :body-function (lambda () (pop chunks))))
-           (next (http-response-stream-body-function response)))
-      (expect (funcall next) :to-equalp (octets 79 75))
-      (signals http-protocol-error (funcall next))
+                      :body-function producer)))
+      (expect (eq producer (http-response-stream-body-function response))
+              :to-be-truthy)
+      (expect (funcall (http-response-stream-body-function response))
+              :to-equalp (octets 79 75))
       (expect (http-response-stream-status response) :to-equalp 200)))
 
   (it "checks size limits and deadlines"
