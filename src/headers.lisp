@@ -70,7 +70,7 @@
   (%make-http-header :name (if pseudo-p
                                (concatenate 'string ":"
                                             (%ascii-lowercase (subseq name 1)))
-                               (copy-seq name))
+                               name)
                      :content (%trim-ows content)))
 
 (defun make-http-pseudo-header (name content)
@@ -97,7 +97,7 @@
 
 (defun %copy-http-header (header)
   (check-type header http-header)
-  (make-http-header (%header-name header)
+  (make-http-header (copy-seq (%header-name header))
                     (%header-content header)
                     :pseudo-p (http-pseudo-header-p header)))
 
