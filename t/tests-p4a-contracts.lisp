@@ -51,33 +51,53 @@
                 :to-be-truthy)
         (expect (length (http-response-stream-trailers response)) :to-be 1))))
 
-  (it "defers prohibited trailer-name checks to HTTP/1, HTTP/2, and HTTP/3 codecs"
-    (let* ((trailers (list (make-http-header "Content-Length" "1")))
-           (headers (list (make-http-header "Transfer-Encoding" "chunked")))
-           (request (make-http-request :method "POST"
-                                       :uri "https://example.test/"
-                                       :headers headers
-                                       :body (octets 65)
-                                       :trailers trailers)))
-      (expect (length (http-request-trailers request)) :to-be 1)
-      (signals http-invalid-header
-        (http1-serialize-request request))
-      (signals http-invalid-header
-        (http1-decode-chunked
-         (p4a-wire-string
-          (concatenate (quote string)
-                       "0"
-                       (format nil "~C~C" #\return #\linefeed)
-                       "Content-Length: 1"
-                       (format nil "~C~C~C~C"
-                               #\return #\linefeed #\return #\linefeed)))))
-      (let ((response (make-http-response :status 200
-                                          :headers headers
-                                          :trailers trailers)))
-        (expect (length (http-response-trailers response)) :to-be 1)
+  (it "validates request and response trailer field-name syntax and defers prohibited fields to codecs"
+    (let* ((name (copy-seq ":status"))
+           (request-failure
+             (handler-case
+                 (make-http-request :method "POST"
+                                    :uri "https://example.test/"
+                                    :trailers (list (cons name "value")))
+               (http-invalid-header (condition) condition)))
+           (response-failure
+             (handler-case
+                 (make-http-response :status 200
+                                     :trailers (list (cons name "value")))
+               (http-invalid-header (condition) condition))))
+      (dolist (failure (list request-failure response-failure))
+        (expect (typep failure 'http-invalid-header) :to-be t)
+        (when (typep failure 'http-invalid-header)
+          (expect (http-error-operation failure) :to-equalp :header)
+          (expect (http-invalid-header-reason failure) :to-equalp :name)
+          (expect (eq name (http-invalid-header-name failure)) :to-be t)
+          (expect (http-error-message failure)
+                  :to-equalp "Header names must be non-empty ASCII tokens.")))
+      (let* ((trailers (list (make-http-header "Content-Length" "1")))
+             (headers (list (make-http-header "Transfer-Encoding" "chunked")))
+             (request (make-http-request :method "POST"
+                                         :uri "https://example.test/"
+                                         :headers headers
+                                         :body (octets 65)
+                                         :trailers trailers)))
+        (expect (length (http-request-trailers request)) :to-be 1)
         (signals http-invalid-header
-          (http1-serialize-response response)))
-      (dolist (validator '(http2-validate-header-section
-                           http3-validate-header-section))
-        (signals http-protocol-error
-          (funcall validator trailers :trailers-p t))))))
+          (http1-serialize-request request))
+        (signals http-invalid-header
+          (http1-decode-chunked
+           (p4a-wire-string
+            (concatenate (quote string)
+                         "0"
+                         (format nil "~C~C" #\return #\linefeed)
+                         "Content-Length: 1"
+                         (format nil "~C~C~C~C"
+                                 #\return #\linefeed #\return #\linefeed)))))
+        (let ((response (make-http-response :status 200
+                                            :headers headers
+                                            :trailers trailers)))
+          (expect (length (http-response-trailers response)) :to-be 1)
+          (signals http-invalid-header
+            (http1-serialize-response response)))
+        (dolist (validator '(http2-validate-header-section
+                             http3-validate-header-section))
+          (signals http-protocol-error
+            (funcall validator trailers :trailers-p t)))))))

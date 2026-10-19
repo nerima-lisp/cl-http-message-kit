@@ -24,7 +24,16 @@
            :line reason
            :code status))
   (let* ((body-octets (if body (%copy-octets body) (%empty-octets)))
-         (normalized-trailers (%normalize-headers trailers)))
+         (normalized-trailers
+           (let ((normalized (%normalize-headers trailers)))
+             (loop for source in trailers
+                   for trailer in normalized
+                   for name = (if (http-header-p source)
+                                  (http-header-name source)
+                                  (car source))
+                   collect (make-http-header
+                            name
+                            (http-header-content trailer))))))
     (%make-http-response
      :protocol-version (%validate-protocol-version protocol-version :response)
      :status status

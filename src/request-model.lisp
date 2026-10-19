@@ -17,7 +17,16 @@
   (when request-target
     (unless (%request-target-value-p request-target)
       (%request-target-error request-target :characters)))
-  (let* ((normalized-trailers (%normalize-headers trailers))
+  (let* ((normalized-trailers
+           (let ((normalized (%normalize-headers trailers)))
+             (loop for source in trailers
+                   for trailer in normalized
+                   for name = (if (http-header-p source)
+                                  (http-header-name source)
+                                  (car source))
+                   collect (make-http-header
+                            name
+                            (http-header-content trailer)))))
          (request
            (%make-http-request
             :protocol-version (%validate-protocol-version protocol-version :request)
