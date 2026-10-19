@@ -288,12 +288,62 @@
                 (list (make-http-header "x" "y")))
         (expect used :to-be 6)
         (expect required :to-be 0)
-        (expect base :to-be 0)))))
+        (expect base :to-be 0))))
 
-(describe "QPACK blocked-stream snapshots"
+  (it "bounds decoded QPACK strings by the field-section byte limit"
+    (let* ((context (make-qpack-context :huffman t))
+           (wire (qpack-encode-header-block
+                  (list (make-http-header "x" "v"))
+                  :context context
+                  :huffman t)))
+      (signals http-size-limit-exceeded
+        (qpack-decode-header-block wire :max-header-bytes 33))))
+
+  (it "bounds encoder-stream literals by the dynamic-table capacity"
+    (let ((context (make-qpack-context :max-table-capacity 40
+                                       :table-capacity 40
+                                       :huffman nil)))
+      (signals http-size-limit-exceeded
+        (qpack-decode-encoder-stream
+         context
+         (octets #x41 120 #x08 49 50 51 52 53 54 55 56)))
+      (expect (qpack-context-insert-count context) :to-be 0)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 0))))
+
+(describe "QPACK static table and blocked-stream behavior"
+  (it "matches RFC 9204 static-table entry 58"
+    (multiple-value-bind (headers used required base)
+        (qpack-decode-header-block (octets 0 0 #xfa))
+      (expect headers :to-equalp
+              (list
+               (make-http-header
+                "strict-transport-security"
+                "max-age=31536000; includesubdomains; preload")))
+      (expect used :to-be 3)
+      (expect required :to-be 0)
+      (expect base :to-be 0)))
+
+  (it "preserves pseudo-field order and leaves semantic validation to HTTP/3"
+    (let* ((headers
+             (list (make-http-header "x-regular" "v")
+                   (make-http-pseudo-header ":method" "GET")
+                   (make-http-pseudo-header ":scheme" "https")
+                   (make-http-pseudo-header ":path" "/")
+                   (make-http-pseudo-header ":authority" "example.test")))
+           (wire (qpack-encode-header-block headers :huffman nil)))
+      (multiple-value-bind (decoded used required base)
+          (qpack-decode-header-block wire)
+        (expect decoded :to-equalp headers)
+        (expect used :to-be (length wire))
+        (expect required :to-be 0)
+        (expect base :to-be 0)
+        (signals http-invalid-header
+          (http3-validate-header-section decoded :request-p t)))))
+
   (it "resumes from original field-section bytes after caller mutation"
     (let* ((wire (octets 2 0 #x80))
-           (decoder-table (http-message-kit::make-qpack-dynamic-table :max-capacity 128))
+           (decoder-table
+             (http-message-kit::make-qpack-dynamic-table :max-capacity 128))
            (context
              (http-message-kit::make-http3-qpack-decoder-context
               decoder-table :blocked-stream-limit 1))
@@ -303,8 +353,26 @@
       (expect (http-message-kit::http3-qpack-blocked-stream-p blocked)
               :to-be t)
       (setf (aref wire 2) #x81)
-      (http-message-kit::qpack-dynamic-table-insert decoder-table "x-original" "v")
+      (http-message-kit::qpack-dynamic-table-insert
+       decoder-table "x-original" "v")
       (expect (http-message-kit::%http3-qpack-detach-ready-streams context)
               :to-equalp (list blocked))
       (expect (http-message-kit::resume-http3-qpack-blocked-stream blocked)
-              :to-equalp (list (cons "x-original" "v"))))))
+              :to-equalp (list (cons "x-original" "v")))))
+
+  (it "rejects oversized blocked sections before registering a stream"
+    (let* ((table
+             (http-message-kit::make-qpack-dynamic-table :max-capacity 128))
+           (context
+             (http-message-kit::make-http3-qpack-decoder-context
+              table :blocked-stream-limit 1))
+           (wire (make-array 34 :element-type '(unsigned-byte 8)
+                             :initial-element 0)))
+      (signals http-size-limit-exceeded
+        (http-message-kit::decode-http3-qpack-field-section
+         wire context 3 :max-header-bytes 1 :max-fields 1))
+      (expect
+       (hash-table-count
+        (http-message-kit::http3-qpack-decoder-context-blocked-streams
+         context))
+       :to-be 0))))

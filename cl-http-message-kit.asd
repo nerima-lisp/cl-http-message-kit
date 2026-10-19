@@ -4,8 +4,8 @@
   :description "HTTP message values, HTTP/1 wire codecs, and HTTP/2/3 framing and header compression."
   :author "nerima-lisp"
   :license "MIT"
-  :version "1.0.0"
-  :depends-on ()
+  :version "2.0.0"
+  :depends-on ("cl-hpack-codec-kit")
   :pathname "src"
   :serial nil
   :components
@@ -42,9 +42,8 @@
           :depends-on ("package" "conditions" "defaults" "utilities" "methods"
                        "headers" "uri" "model-validation" "model" "request-model"
                        "response-model" "message-semantics"))
-   (:file "hpack-data" :depends-on ("package"))
    (:file "hpack"
-          :depends-on ("package" "conditions" "defaults" "utilities" "headers" "hpack-data"))
+          :depends-on ("package" "conditions" "defaults" "utilities" "headers"))
    (:file "qpack"
           :depends-on ("package" "conditions" "defaults" "utilities" "headers" "hpack"))
    (:file "http2-3-codec"
@@ -65,10 +64,11 @@
    (:file "tests-contracts" :depends-on ("package"))
    (:file "tests-http2-3" :depends-on ("package"))
    (:file "tests-http1" :depends-on ("package"))
+   (:file "tests-hpack" :depends-on ("package"))
    (:file "tests-qpack" :depends-on ("package"))
    (:file "runner" :depends-on ("package" "tests-uri" "tests-headers" "tests-model"
-                                        "tests-advanced" "tests-contracts" "tests-http2-3"
-                                        "tests-http1" "tests-qpack")))
+                                "tests-advanced" "tests-contracts" "tests-http2-3"
+                                "tests-http1" "tests-hpack" "tests-qpack")))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call "HTTP-MESSAGE-KIT/TEST" "RUN-TESTS")))

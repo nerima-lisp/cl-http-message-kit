@@ -9,6 +9,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    cl-hpack-codec-kit = {
+      url = "github:nerima-lisp/cl-hpack-codec-kit/v1.1.1";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.cl-weave.follows = "cl-weave";
+    };
+
     paredit-cli = {
       url = "github:nerima-lisp/paredit-cli/v1.6.0";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,6 +26,7 @@
       self,
       nixpkgs,
       cl-weave,
+      cl-hpack-codec-kit,
       paredit-cli,
       ...
     }:
@@ -37,11 +44,14 @@
           name = "cl-http-message-kit-test";
           runtimeInputs = [
             cl-weave.packages.${system}.default
+            cl-hpack-codec-kit.packages.${system}.default
             pkgs.coreutils
           ];
           text = ''
             export HOME="$TMPDIR"
-            export CL_SOURCE_REGISTRY="$PWD//"
+            export CL_SOURCE_REGISTRY="$PWD//:${
+              cl-hpack-codec-kit.packages.${system}.default
+            }/share/common-lisp/source//"
             exec timeout --signal=TERM --kill-after=10s 120s \
               cl-weave run \
               --load "$PWD/cl-http-message-kit.asd" \
@@ -67,7 +77,7 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-http-message-kit";
-            version = "1.0.0";
+            version = "2.0.0";
             src = builtins.path {
               path = ./.;
               name = "cl-http-message-kit-source";
@@ -78,6 +88,10 @@
               target="$out/share/common-lisp/source/cl-http-message-kit"
               mkdir -p "$target"
               cp -r cl-http-message-kit.asd src t "$target"/
+              ln -s "${
+                cl-hpack-codec-kit.packages.${system}.default
+              }/share/common-lisp/source/cl-hpack-codec-kit" \
+                "$out/share/common-lisp/source/cl-hpack-codec-kit"
               runHook postInstall
             '';
             meta = {
@@ -114,11 +128,17 @@
           default = pkgs.mkShell {
             packages = [
               cl-weave.packages.${system}.default
+              cl-hpack-codec-kit.packages.${system}.default
               paredit-cli.packages.${system}.default
               pkgs.sbcl
               pkgs.coreutils
               pkgs.perl
             ];
+            shellHook = ''
+              export CL_SOURCE_REGISTRY="$PWD//:${
+                cl-hpack-codec-kit.packages.${system}.default
+              }/share/common-lisp/source//"
+            '';
           };
         }
       );
@@ -132,10 +152,13 @@
             name = "cl-http-message-kit-coverage";
             runtimeInputs = [
               clWeave
+              cl-hpack-codec-kit.packages.${system}.default
               pkgs.coreutils
             ];
             text = ''
-              export CL_SOURCE_REGISTRY="$PWD//"
+              export CL_SOURCE_REGISTRY="$PWD//:${
+                cl-hpack-codec-kit.packages.${system}.default
+              }/share/common-lisp/source//"
               exec timeout --signal=TERM --kill-after=10s 300s \
                 cl-weave run \
                 --load "$PWD/cl-http-message-kit.asd" \
@@ -154,7 +177,6 @@
                 --coverage-exclude src/defaults.lisp \
                 --coverage-exclude src/status-registry.lisp \
                 --coverage-exclude src/header-data.lisp \
-                --coverage-exclude src/hpack-data.lisp \
                 --coverage-min-expression 100 \
                 --coverage-min-branch 100
             '';

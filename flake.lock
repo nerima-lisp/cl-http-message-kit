@@ -1,5 +1,29 @@
 {
   "nodes": {
+    "cl-hpack-codec-kit": {
+      "inputs": {
+        "cl-weave": [
+          "cl-weave"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1792409839,
+        "narHash": "sha256-m6fGAnY5Xf5DjoJXkd0LilqPAqADMkIPgqQ8h1LYMl8=",
+        "owner": "nerima-lisp",
+        "repo": "cl-hpack-codec-kit",
+        "rev": "52daf534f8554e4acbcbfdd992a09d3f136f39c6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nerima-lisp",
+        "ref": "v1.1.1",
+        "repo": "cl-hpack-codec-kit",
+        "type": "github"
+      }
+    },
     "cl-nix-forge": {
       "inputs": {
         "nixpkgs": [
@@ -144,6 +168,7 @@
     },
     "root": {
       "inputs": {
+        "cl-hpack-codec-kit": "cl-hpack-codec-kit",
         "cl-weave": "cl-weave",
         "nixpkgs": "nixpkgs",
         "paredit-cli": "paredit-cli_2"
