@@ -18,15 +18,16 @@
   (dynamic-table nil)
   (blocked-stream-limit 0 :type integer)
   (blocked-streams (make-hash-table :test #'eql) :type hash-table)
-  (latest-streams (make-hash-table :test #'eql) :type hash-table))
+  (latest-streams (make-hash-table :test #'eql) :type hash-table)
+  (closed-p nil :type boolean))
 
 (defstruct (http3-qpack-blocked-stream
              (:constructor %make-http3-qpack-blocked-stream))
   (stream-id 0 :type integer)
   (required-insert-count 0 :type integer)
-  (resume-function nil :type function)
-  (serialize (lambda (thunk) (funcall thunk)) :type function)
-  (context nil :type http3-qpack-decoder-context)
+  (resume-function nil :type (or null function))
+  (serialize (lambda (thunk) (funcall thunk)) :type (or null function))
+  (context nil :type (or null http3-qpack-decoder-context))
   (state :blocked :type symbol))
 
 (defun make-http3-qpack-decoder-context
@@ -63,7 +64,10 @@
                      :serialize serialize
                      :context context)))
       (when existing-latest
-        (setf (http3-qpack-blocked-stream-state existing-latest) :invalid))
+        (setf (http3-qpack-blocked-stream-state existing-latest) :invalid
+              (http3-qpack-blocked-stream-resume-function existing-latest) nil
+              (http3-qpack-blocked-stream-serialize existing-latest) nil
+              (http3-qpack-blocked-stream-context existing-latest) nil))
       (setf (gethash stream-id streams) blocked
             (gethash stream-id latest-streams) blocked)
       blocked)))
@@ -86,24 +90,36 @@
 (defun resume-http3-qpack-blocked-stream (blocked-stream)
   (unless (http3-qpack-blocked-stream-p blocked-stream)
     (%qpack-error "A QPACK blocked-stream token is required." blocked-stream))
-  (let ((resume-function nil))
+  (let ((serialize (http3-qpack-blocked-stream-serialize blocked-stream))
+        (resume-function nil))
+    (unless (functionp serialize)
+      (%qpack-error "QPACK blocked-stream token is not resumable."
+                    blocked-stream))
     (funcall
-     (http3-qpack-blocked-stream-serialize blocked-stream)
+     serialize
      (lambda ()
        (let* ((context (http3-qpack-blocked-stream-context blocked-stream))
               (stream-id
                 (http3-qpack-blocked-stream-stream-id blocked-stream))
               (latest-streams
-                (http3-qpack-decoder-context-latest-streams context)))
-         (unless (and
-                  (eq (http3-qpack-blocked-stream-state blocked-stream) :ready)
-                  (eq blocked-stream (gethash stream-id latest-streams)))
+                (and context
+                     (http3-qpack-decoder-context-latest-streams context))))
+         (unless (and context
+                      (eq (http3-qpack-blocked-stream-state blocked-stream)
+                          :ready)
+                      (eq blocked-stream (gethash stream-id latest-streams)))
            (%qpack-error "QPACK blocked-stream token is not resumable."
                          stream-id))
-         (remhash stream-id latest-streams))
-       (setf (http3-qpack-blocked-stream-state blocked-stream) :consumed
-             resume-function
-             (http3-qpack-blocked-stream-resume-function blocked-stream))))
+         (remhash stream-id latest-streams)
+         (setf resume-function
+               (http3-qpack-blocked-stream-resume-function blocked-stream)
+               (http3-qpack-blocked-stream-state blocked-stream) :consumed
+               (http3-qpack-blocked-stream-resume-function blocked-stream) nil
+               (http3-qpack-blocked-stream-serialize blocked-stream) nil
+               (http3-qpack-blocked-stream-context blocked-stream) nil))))
+    (unless (functionp resume-function)
+      (%qpack-error "QPACK blocked-stream token has no resume function."
+                    blocked-stream))
     (funcall resume-function)))
 
 (defun decode-http3-qpack-field-section
@@ -1892,3 +1908,132 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
                      :needed nil
                      :available (- limit start))
               (error condition)))))))
+(progn
+  (defun %qpack-http3-require-open-context (context)
+    (unless (http3-qpack-decoder-context-p context)
+      (%qpack-error "An HTTP/3 QPACK decoder context is required." context))
+    (when (http3-qpack-decoder-context-closed-p context)
+      (%qpack-error "The HTTP/3 QPACK decoder context is closed."))
+    context)
+
+  (defun %qpack-http3-release-token (token state)
+    (when token
+      (setf (http3-qpack-blocked-stream-state token) state
+            (http3-qpack-blocked-stream-resume-function token) nil
+            (http3-qpack-blocked-stream-serialize token) nil
+            (http3-qpack-blocked-stream-context token) nil))
+    token)
+
+  (defun qpack-make-http3-decoder-context
+      (context &key max-blocked-streams)
+    "Create HTTP/3 blocked-stream state using the local SETTINGS limit."
+    (%qpack-check-context context)
+    (unless (and (integerp max-blocked-streams)
+                 (<= 0 max-blocked-streams +qpack-max-integer+))
+      (%qpack-error
+       "SETTINGS_QPACK_BLOCKED_STREAMS must be between zero and 2^62-1."
+       max-blocked-streams))
+    (make-http3-qpack-decoder-context
+     (qpack-context-dynamic-table context)
+     :blocked-stream-limit max-blocked-streams))
+
+  (defun qpack-decode-http3-field-section
+      (octets context stream-id
+       &key role (serialize (lambda (thunk) (funcall thunk)))
+            (max-header-bytes 65536) (max-fields 256))
+    "Decode and validate an HTTP/3 field section or return a blocked token."
+    (%qpack-http3-require-open-context context)
+    (unless (member role '(:request :response :trailers))
+      (%qpack-error "An HTTP/3 field-section role is required." role))
+    (handler-case
+        (decode-http3-qpack-field-section
+         octets context stream-id
+         :serialize serialize
+         :on-decoded
+         (lambda (fields)
+           (ecase role
+             (:request
+              (http3-validate-header-section fields :request-p t))
+             (:response
+              (http3-validate-header-section fields))
+             (:trailers
+              (http3-validate-header-section fields :trailers-p t)))
+           fields)
+         :max-header-bytes max-header-bytes
+         :max-fields max-fields)
+      (http-protocol-error (condition)
+        (let ((detail (http-protocol-error-detail condition)))
+          (if (and (consp detail)
+                   (eq (first detail) :qpack-decompression-failed))
+              (error 'http-connection-error
+                     :message "HTTP/3 QPACK decompression failed."
+                     :operation :http3-transport
+                     :cause condition)
+              (error condition))))))
+
+  (defun qpack-blocked-stream-p (object)
+    (http3-qpack-blocked-stream-p object))
+
+  (defun qpack-take-ready-streams (context)
+    "Return blocked-stream tokens whose required inserts are now available."
+    (%qpack-http3-require-open-context context)
+    (%http3-qpack-detach-ready-streams context))
+
+  (defun qpack-resume-blocked-stream (blocked-stream)
+    (resume-http3-qpack-blocked-stream blocked-stream))
+
+  (defun qpack-cancel-blocked-stream
+      (context stream-id &key (serialize (lambda (thunk) (funcall thunk))))
+    "Release stream state and return its QPACK decoder-stream instruction."
+    (%qpack-http3-require-open-context context)
+    (unless (and (integerp stream-id)
+                 (<= 0 stream-id +qpack-max-integer+))
+      (%qpack-error "QPACK stream IDs must be between zero and 2^62-1."
+                    stream-id))
+    (unless (functionp serialize)
+      (%qpack-error "QPACK serialization must be a function." serialize))
+    (let ((instruction (qpack-encode-stream-cancellation stream-id))
+          (released-p nil))
+      (funcall
+       serialize
+       (lambda ()
+         (let* ((blocked-streams
+                  (http3-qpack-decoder-context-blocked-streams context))
+                (latest-streams
+                  (http3-qpack-decoder-context-latest-streams context))
+                (blocked (gethash stream-id blocked-streams))
+                (latest (gethash stream-id latest-streams)))
+           (setf released-p (or blocked latest))
+           (remhash stream-id blocked-streams)
+           (remhash stream-id latest-streams)
+           (%qpack-http3-release-token blocked :cancelled)
+           (unless (eq blocked latest)
+             (%qpack-http3-release-token latest :cancelled)))))
+      (values (not (null released-p)) instruction)))
+
+  (defun qpack-close-http3-decoder-context
+      (context &key (serialize (lambda (thunk) (funcall thunk))))
+    "Clear adapter state when its HTTP/3 connection closes."
+    (unless (http3-qpack-decoder-context-p context)
+      (%qpack-error "An HTTP/3 QPACK decoder context is required." context))
+    (unless (functionp serialize)
+      (%qpack-error "QPACK serialization must be a function." serialize))
+    (funcall
+     serialize
+     (lambda ()
+       (unless (http3-qpack-decoder-context-closed-p context)
+         (maphash
+          (lambda (stream-id token)
+            (declare (ignore stream-id))
+            (%qpack-http3-release-token token :closed))
+          (http3-qpack-decoder-context-blocked-streams context))
+         (maphash
+          (lambda (stream-id token)
+            (declare (ignore stream-id))
+            (%qpack-http3-release-token token :closed))
+          (http3-qpack-decoder-context-latest-streams context))
+         (clrhash (http3-qpack-decoder-context-blocked-streams context))
+         (clrhash (http3-qpack-decoder-context-latest-streams context))
+         (setf (http3-qpack-decoder-context-dynamic-table context) nil
+               (http3-qpack-decoder-context-closed-p context) t))))
+    context))

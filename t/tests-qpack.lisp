@@ -373,6 +373,265 @@
          wire context 3 :max-header-bytes 1 :max-fields 1))
       (expect
        (hash-table-count
-        (http-message-kit::http3-qpack-decoder-context-blocked-streams
-         context))
+        (http-message-kit::http3-qpack-decoder-context-blocked-streams context))
        :to-be 0))))
+(describe "QPACK HTTP/3 transport adapter"
+  (it "resumes a field section after encoder-stream inserts on the shared context"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions (concatenate '(vector (unsigned-byte 8))
+                                      capacity-wire insert-wire))
+           (wire (octets 2 0 #x80))
+           (blocked (qpack-decode-http3-field-section
+                     wire adapter 3 :role :trailers)))
+      (expect (qpack-blocked-stream-p blocked) :to-be t)
+      (expect (qpack-take-ready-streams adapter) :to-equal nil)
+      (multiple-value-bind (events consumed)
+          (qpack-decode-encoder-stream decoder instructions)
+        (expect consumed :to-be (length instructions))
+        (expect (mapcar #'first events) :to-equal '(:set-capacity :insert)))
+      (expect (qpack-take-ready-streams adapter) :to-equal (list blocked))
+      (expect (qpack-resume-blocked-stream blocked)
+              :to-equalp (list (cons "x-field" "value")))
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
+              :to-be 0)
+      (signals http-protocol-error
+        (qpack-resume-blocked-stream blocked))))
+
+  (it "validates request, response, and trailer sections before returning fields"
+    (let* ((decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (request-wire
+             (octets 0 0 #xd1 #xd7 #xc1 #x50 #x0c
+                     101 120 97 109 112 108 101 46 116 101 115 116)))
+      (expect (qpack-decode-http3-field-section
+               request-wire adapter 0 :role :request)
+              :to-equalp
+              (list (cons ":method" "GET")
+                    (cons ":scheme" "https")
+                    (cons ":path" "/")
+                    (cons ":authority" "example.test")))
+      (expect (qpack-decode-http3-field-section
+               (octets 0 0 #xd9) adapter 4 :role :response)
+              :to-equalp (list (cons ":status" "200")))
+      (expect (qpack-decode-http3-field-section
+               (octets 0 0) adapter 8 :role :trailers)
+              :to-equal nil)
+      (signals http-invalid-header
+        (qpack-decode-http3-field-section
+         (octets 0 0 #xd1) adapter 12 :role :request))))
+
+  (it "checks request-section semantics again when resuming a blocked section"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions (concatenate '(vector (unsigned-byte 8))
+                                      capacity-wire insert-wire))
+           (blocked (qpack-decode-http3-field-section
+                     (octets 2 0 #x80) adapter 3 :role :request)))
+      (expect (qpack-blocked-stream-p blocked) :to-be t)
+      (qpack-decode-encoder-stream decoder instructions)
+      (expect (qpack-take-ready-streams adapter) :to-equal (list blocked))
+      (signals http-invalid-header
+        (qpack-resume-blocked-stream blocked))
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
+              :to-be 0)))
+
+  (it "returns RFC stream-cancellation bytes and frees blocked-stream capacity"
+    (let* ((decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (peer (make-qpack-context :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (blocked (qpack-decode-http3-field-section
+                     (octets 2 0 #x80) adapter 3 :role :trailers))
+           (serialize-calls 0))
+      (expect (qpack-blocked-stream-p blocked) :to-be t)
+      (multiple-value-bind (released-p instruction)
+          (qpack-cancel-blocked-stream
+           adapter 3
+           :serialize (lambda (thunk)
+                        (incf serialize-calls)
+                        (funcall thunk)))
+        (expect released-p :to-be t)
+        (expect instruction :to-equalp (octets #x43))
+        (multiple-value-bind (events consumed)
+            (qpack-decode-decoder-stream peer instruction)
+          (expect events :to-equalp (list (list :stream-cancellation 3)))
+          (expect consumed :to-be (length instruction))))
+      (expect serialize-calls :to-be 1)
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
+              :to-be 0)
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
+              :to-be 0)
+      (expect (http-message-kit::http3-qpack-blocked-stream-resume-function blocked)
+              :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-serialize blocked) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-context blocked) :to-be nil)
+      (let ((next (qpack-decode-http3-field-section
+                   (octets 2 0 #x80) adapter 7 :role :trailers)))
+        (expect (qpack-blocked-stream-p next) :to-be t)
+        (multiple-value-bind (released-p instruction)
+            (qpack-cancel-blocked-stream adapter 7)
+          (expect released-p :to-be t)
+          (expect instruction :to-equalp (octets #x47)))
+        (expect (hash-table-count
+                 (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
+                :to-be 0)
+        (expect (hash-table-count
+                 (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
+                :to-be 0))))
+
+
+  (it "clears a ready token when its stream is cancelled"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions (concatenate '(vector (unsigned-byte 8))
+                                      capacity-wire insert-wire))
+           (token (qpack-decode-http3-field-section
+                   (octets 2 0 #x80) adapter 8 :role :trailers)))
+      (expect (qpack-blocked-stream-p token) :to-be t)
+      (qpack-decode-encoder-stream decoder instructions)
+      (let ((ready (qpack-take-ready-streams adapter)))
+        (expect ready :to-equal (list token))
+        (setf ready nil))
+      (multiple-value-bind (released-p instruction)
+          (qpack-cancel-blocked-stream adapter 8)
+        (expect released-p :to-be t)
+        (expect instruction :to-equalp (octets #x48)))
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
+              :to-be 0)
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
+              :to-be 0)
+      (expect (http-message-kit::http3-qpack-blocked-stream-resume-function token) :to-be nil)
+      (signals http-protocol-error
+        (qpack-resume-blocked-stream token))))
+
+  (it "closes the decoder adapter and releases blocked-token references"
+    (let* ((decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (token (qpack-decode-http3-field-section
+                   (octets 2 0 #x80) adapter 9 :role :trailers)))
+      (expect (qpack-blocked-stream-p token) :to-be t)
+      (qpack-close-http3-decoder-context adapter)
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
+              :to-be 0)
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-latest-streams adapter))
+              :to-be 0)
+      (expect (http-message-kit::http3-qpack-blocked-stream-resume-function token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-serialize token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-blocked-stream-context token) :to-be nil)
+      (expect (http-message-kit::http3-qpack-decoder-context-closed-p adapter) :to-be t)
+      (signals http-protocol-error
+        (qpack-take-ready-streams adapter))))
+
+  (it "treats SETTINGS_QPACK_BLOCKED_STREAMS overflow as decompression failure"
+    (let* ((decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (first (qpack-decode-http3-field-section
+                   (octets 2 0 #x80) adapter 3 :role :trailers))
+           (failure nil))
+      (expect (qpack-blocked-stream-p first) :to-be t)
+      (handler-case
+          (qpack-decode-http3-field-section
+           (octets 2 0 #x80) adapter 7 :role :trailers)
+        (http-connection-error (condition)
+          (setf failure condition)))
+      (expect (typep failure 'http-connection-error) :to-be t)
+      (when (typep failure 'http-connection-error)
+        (let ((cause (http-connection-error-cause failure)))
+          (expect (typep cause 'http-protocol-error) :to-be t)
+          (when (typep cause 'http-protocol-error)
+            (expect (first (http-protocol-error-detail cause))
+                    :to-be :qpack-decompression-failed))))
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
+              :to-be 1)
+      (qpack-close-http3-decoder-context adapter)
+      (expect (hash-table-count
+               (http-message-kit::http3-qpack-decoder-context-blocked-streams adapter))
+              :to-be 0)))
+
+
+  (it "decodes the RFC 9204 Appendix B.4 section after Duplicate"
+    (let* ((decoder (make-qpack-context :max-table-capacity 220
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (b2-encoder-stream
+             (octets #x3f #xbd #x01
+                     #xc0 #x0f
+                     119 119 119 46 101 120 97 109 112 108 101 46 99 111 109
+                     #xc1 #x0c
+                     47 115 97 109 112 108 101 47 112 97 116 104))
+           (b3-encoder-stream
+             (octets #x4a
+                     99 117 115 116 111 109 45 107 101 121
+                     #x0c
+                     99 117 115 116 111 109 45 118 97 108 117 101))
+           (b4-field-section (octets #x05 #x00 #x80 #xc1 #x81)))
+      (qpack-decode-encoder-stream decoder b2-encoder-stream)
+      (qpack-decode-encoder-stream decoder b3-encoder-stream)
+      (signals http-qpack-blocked
+        (qpack-decode-header-block b4-field-section :context decoder))
+      (qpack-decode-encoder-stream decoder (octets #x02))
+      (multiple-value-bind (headers used required base)
+          (qpack-decode-header-block b4-field-section :context decoder)
+        (expect headers :to-equalp
+                (list (make-http-pseudo-header ":authority" "www.example.com")
+                      (make-http-pseudo-header ":path" "/")
+                      (make-http-header "custom-key" "custom-value")))
+        (expect used :to-be (length b4-field-section))
+        (expect required :to-be 4)
+        (expect base :to-be 4)))))
