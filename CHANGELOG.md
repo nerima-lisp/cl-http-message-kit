@@ -10,6 +10,25 @@
 
 ### Migration
 
+- Explicit request targets are accepted when they contain visible ASCII. Their
+  form-specific syntax is checked by the HTTP parser on input and by a
+  serializer or header-section validator before output.
+- Response constructors accept bodies and trailers for 1xx, 204, and 304
+  statuses. HTTP/1 serialization rejects them; HTTP/2 and HTTP/3 transport
+  adapters must apply the same status rule when writing response headers, DATA
+  frames, and trailer sections.
+- Request and response constructors no longer reject prohibited trailer field
+  names. HTTP/1 trailer encoding and decoding and HTTP/2 or HTTP/3 trailer
+  section validation reject them at the protocol boundary.
+- `http-header-name` and `http-header-content` expose their stored values, and
+  `setf` stores and returns the exact assigned value. Message constructors
+  continue to copy and revalidate headers, and request and response accessors
+  return copies of each header.
+- `make-http-response-stream` retains the supplied body function. The adapter
+  that consumes it is responsible for checking returned chunks and enforcing
+  the declared body length. Function and body-length arguments remain checked
+  by the constructor.
+- `make-http-uri` accepts a symbol scheme and treats its name as a string.
 - Add the `cl-hpack-codec-kit` source directory to `CL_SOURCE_REGISTRY` beside
   this checkout, or use `nix develop`, which configures both systems.
 - QPACK now obtains its shared Huffman, integer, and header-name validation
