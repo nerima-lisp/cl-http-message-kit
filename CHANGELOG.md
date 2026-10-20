@@ -10,6 +10,14 @@
 
 ### Migration
 
+- QPACK encoding now exposes `qpack-prepare-*` operations with companion
+  `qpack-commit-encoding` and `qpack-abort-encoding` operations. Prepare before
+  writing and commit only after a successful write; abort when zero bytes are
+  known to have been sent. Close the connection and discard the encoder and
+  decoder QPACK contexts if any bytes may have been sent or delivery is
+  uncertain. Existing state-mutating `qpack-encode-*` operations still update
+  context immediately. Header-block preparation requires `:stream-id` when
+  dynamic references are enabled.
 - Explicit request targets are accepted when they contain visible ASCII. Their
   form-specific syntax is checked by the HTTP parser on input and by a
   serializer or header-section validator before output.

@@ -1545,7 +1545,7 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
      name))
   (%qpack-normalize-name name))
 
-(defstruct (qpack-context (:constructor %make-qpack-context)) max-table-capacity max-blocked-streams max-header-list-size huffman-p dynamic-table decoder-stream-state blocked-streams)
+(defstruct (qpack-context (:constructor %make-qpack-context)) max-table-capacity max-blocked-streams max-header-list-size huffman-p dynamic-table decoder-stream-state blocked-streams (revision 0 :type integer))
 
 (progn
   (defun %qpack-check-context (context)
@@ -1604,26 +1604,142 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
      (qpack-context-decoder-stream-state (%qpack-check-context context))))
 
   (defun qpack-context-set-capacity (context capacity)
-    (qpack-dynamic-table-set-capacity
-     (qpack-context-dynamic-table (%qpack-check-context context)) capacity))
+    (let ((table
+            (qpack-dynamic-table-set-capacity
+             (qpack-context-dynamic-table
+              (%qpack-check-context context))
+             capacity)))
+      (incf (qpack-context-revision context))
+      table))
+  (define-condition qpack-encoding-transaction-error (http-error)
+    ((reason :initarg :reason
+             :reader qpack-encoding-transaction-error-reason)))
 
-  (defun qpack-encode-set-capacity (context capacity)
+  (defstruct (qpack-encoding-transaction
+               (:constructor %make-qpack-encoding-transaction))
+    context
+    (revision 0 :type integer)
+    (state :prepared :type symbol)
+    dynamic-table
+    decoder-stream-state)
+
+  (defun %qpack-transaction-error (reason message)
+    (error 'qpack-encoding-transaction-error
+           :reason reason
+           :message message))
+
+  (defun %qpack-copy-hash-table (table)
+    (let ((copy (make-hash-table :test (hash-table-test table)
+                                 :size (max 1 (hash-table-count table)))))
+      (maphash (lambda (key value)
+                 (setf (gethash key copy) value))
+               table)
+      copy))
+
+  (defun %qpack-copy-dynamic-table (table)
+    (%make-qpack-dynamic-table
+     :max-capacity (qpack-dynamic-table-max-capacity table)
+     :capacity (qpack-dynamic-table-capacity table)
+     :entries (copy-list (qpack-dynamic-table-entries table))
+     :size (qpack-dynamic-table-size table)
+     :insert-count (qpack-dynamic-table-insert-count table)
+     :protected-indices
+     (%qpack-copy-hash-table
+      (qpack-dynamic-table-protected-indices table))))
+
+  (defun %qpack-copy-context-state (context)
+    (let* ((old-state (qpack-context-decoder-stream-state context))
+           (table (%qpack-copy-dynamic-table
+                   (qpack-context-dynamic-table context)))
+           (state
+             (%make-qpack-decoder-stream-state
+              :dynamic-table table
+              :sent-insert-count
+              (qpack-decoder-stream-state-sent-insert-count old-state)
+              :known-received-count
+              (qpack-decoder-stream-state-known-received-count old-state)
+              :blocked-stream-limit
+              (qpack-decoder-stream-state-blocked-stream-limit old-state)
+              :outstanding-sections
+              (%qpack-copy-hash-table
+               (qpack-decoder-stream-state-outstanding-sections old-state)))))
+      (values table state)))
+
+  (defun %qpack-check-context-revision (context revision)
+    (unless (= revision (qpack-context-revision context))
+      (%qpack-transaction-error
+       :stale
+       "The QPACK context changed while preparing an encoding transaction.")))
+
+  (defun %qpack-check-prepared-transaction (transaction)
+    (unless (qpack-encoding-transaction-p transaction)
+      (%qpack-transaction-error
+       :invalid
+       "A QPACK encoding transaction is required."))
+    (unless (eq (qpack-encoding-transaction-state transaction) :prepared)
+      (%qpack-transaction-error
+       (qpack-encoding-transaction-state transaction)
+       "A QPACK encoding transaction can be used only once."))
+    transaction)
+
+  (defun qpack-commit-encoding (transaction)
+    (%qpack-check-prepared-transaction transaction)
+    (let ((context (qpack-encoding-transaction-context transaction)))
+      (when context
+        (unless (= (qpack-encoding-transaction-revision transaction)
+                   (qpack-context-revision context))
+          (setf (qpack-encoding-transaction-state transaction) :stale)
+          (%qpack-transaction-error
+           :stale
+           "The QPACK context changed before the encoding transaction committed.")))
+      (when (qpack-encoding-transaction-decoder-stream-state transaction)
+        (setf (qpack-context-dynamic-table context)
+              (qpack-encoding-transaction-dynamic-table transaction)
+              (qpack-context-decoder-stream-state context)
+              (qpack-encoding-transaction-decoder-stream-state transaction))
+        (incf (qpack-context-revision context)))
+      (setf (qpack-encoding-transaction-state transaction) :committed))
+    transaction)
+
+  (defun qpack-abort-encoding (transaction)
+    (%qpack-check-prepared-transaction transaction)
+    (setf (qpack-encoding-transaction-state transaction) :aborted)
+    t)
+
+  (defun qpack-prepare-set-capacity (context capacity)
     (%qpack-check-context context)
-    (qpack-context-set-capacity context capacity)
-    (qpack-encode-set-dynamic-table-capacity capacity))
+    (let ((revision (qpack-context-revision context))
+          (wire (qpack-encode-set-dynamic-table-capacity capacity)))
+      (multiple-value-bind (table state)
+          (%qpack-copy-context-state context)
+        (qpack-dynamic-table-set-capacity table capacity)
+        (%qpack-check-context-revision context revision)
+        (values
+         wire
+         (%make-qpack-encoding-transaction
+          :context context :revision revision
+          :dynamic-table table :decoder-stream-state state)))))
 
-  (defun %qpack-context-note-insert (context)
-    (qpack-decoder-stream-state-note-insertions-sent
-     (qpack-context-decoder-stream-state context)
-     (qpack-context-insert-count context))
-    context)
+  (defun %qpack-prepare-insert (context revision wire name value)
+    (multiple-value-bind (table state)
+        (%qpack-copy-context-state context)
+      (qpack-dynamic-table-insert table name value)
+      (qpack-decoder-stream-state-note-insertions-sent
+       state (qpack-dynamic-table-insert-count table))
+      (%qpack-check-context-revision context revision)
+      (values
+       wire
+       (%make-qpack-encoding-transaction
+        :context context :revision revision
+        :dynamic-table table :decoder-stream-state state))))
 
-  (defun qpack-encode-insert-with-name-reference
+  (defun qpack-prepare-insert-with-name-reference
       (context name-index value &key (static-p t) (huffman nil huffman-supplied-p))
     (%qpack-check-context context)
     (unless (member static-p '(nil t))
       (%qpack-error "QPACK static-p selection must be boolean." static-p))
-    (let* ((table (qpack-context-dynamic-table context))
+    (let* ((revision (qpack-context-revision context))
+           (table (qpack-context-dynamic-table context))
            (entry (if static-p
                       (or (%qpack-static-entry name-index)
                           (%qpack-error
@@ -1635,39 +1751,68 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
                   :huffman-p (if huffman-supplied-p
                                  huffman
                                  (qpack-context-huffman-p context)))))
-      (qpack-dynamic-table-insert
-       table
+      (%qpack-prepare-insert
+       context revision wire
        (if (qpack-dynamic-entry-p entry)
            (qpack-dynamic-entry-name entry)
            (first entry))
-       (%qpack-normalize-value value))
-      (%qpack-context-note-insert context)
-      wire))
+       (%qpack-normalize-value value))))
 
-  (defun qpack-encode-insert-with-literal-name
+  (defun qpack-prepare-insert-with-literal-name
       (context name value &key (huffman nil huffman-supplied-p))
     (%qpack-check-context context)
-    (let ((wire (%qpack-encode-insert-with-literal-name
-                 name value
-                 :huffman-p (if huffman-supplied-p
-                                huffman
-                                (qpack-context-huffman-p context)))))
-      (qpack-dynamic-table-insert
-       (qpack-context-dynamic-table context) name
-       (%qpack-normalize-value value))
-      (%qpack-context-note-insert context)
-      wire))
+    (let* ((revision (qpack-context-revision context))
+           (wire (%qpack-encode-insert-with-literal-name
+                  name value
+                  :huffman-p (if huffman-supplied-p
+                                 huffman
+                                 (qpack-context-huffman-p context)))))
+      (%qpack-prepare-insert
+       context revision wire name (%qpack-normalize-value value))))
+
+  (defun qpack-prepare-duplicate (context relative-index)
+    (%qpack-check-context context)
+    (let* ((revision (qpack-context-revision context))
+           (source (%qpack-dynamic-entry-at-relative
+                    (qpack-context-dynamic-table context) relative-index))
+           (wire (%qpack-encode-duplicate relative-index)))
+      (%qpack-prepare-insert
+       context revision wire
+       (qpack-dynamic-entry-name source)
+       (qpack-dynamic-entry-value source))))
+
+  (defun qpack-encode-set-capacity (context capacity)
+  (multiple-value-bind (wire transaction)
+      (qpack-prepare-set-capacity context capacity)
+    (qpack-commit-encoding transaction)
+    wire))
+
+  (defun qpack-encode-insert-with-name-reference
+    (context name-index value &key (static-p t) (huffman nil huffman-supplied-p))
+  (multiple-value-bind (wire transaction)
+      (if huffman-supplied-p
+          (qpack-prepare-insert-with-name-reference
+           context name-index value :static-p static-p :huffman huffman)
+          (qpack-prepare-insert-with-name-reference
+           context name-index value :static-p static-p))
+    (qpack-commit-encoding transaction)
+    wire))
+
+  (defun qpack-encode-insert-with-literal-name
+    (context name value &key (huffman nil huffman-supplied-p))
+  (multiple-value-bind (wire transaction)
+      (if huffman-supplied-p
+          (qpack-prepare-insert-with-literal-name
+           context name value :huffman huffman)
+          (qpack-prepare-insert-with-literal-name context name value))
+    (qpack-commit-encoding transaction)
+    wire))
 
   (defun qpack-encode-duplicate (context relative-index)
-    (%qpack-check-context context)
-    (let* ((table (qpack-context-dynamic-table context))
-           (source (%qpack-dynamic-entry-at-relative table relative-index))
-           (wire (%qpack-encode-duplicate relative-index)))
-      (qpack-dynamic-table-insert
-       table (qpack-dynamic-entry-name source)
-       (qpack-dynamic-entry-value source))
-      (%qpack-context-note-insert context)
-      wire))
+  (multiple-value-bind (wire transaction)
+      (qpack-prepare-duplicate context relative-index)
+    (qpack-commit-encoding transaction)
+    wire))
 
   (defun qpack-encode-section-ack (stream-id)
     (qpack-encode-section-acknowledgment stream-id)))
@@ -1692,6 +1837,8 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
                          (max-instruction-bytes 65536)
                          (max-buffer-bytes 262144))
   (%qpack-check-context context)
+  (when (and (%octet-vector-p octets) (plusp (length octets)))
+    (incf (qpack-context-revision context)))
   (multiple-value-bind (events used)
       (qpack-process-encoder-stream
        (qpack-context-dynamic-table context) octets
@@ -1743,6 +1890,8 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
                          (max-instruction-bytes 65536)
                          (max-buffer-bytes 262144))
   (%qpack-check-context context)
+  (when (and (%octet-vector-p octets) (plusp (length octets)))
+    (incf (qpack-context-revision context)))
   (multiple-value-bind (events used)
       (qpack-process-decoder-stream
        octets :allow-incomplete-p allow-incomplete-p
@@ -1761,36 +1910,79 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
              events)
      used)))
 
-(defun qpack-encode-header-block
-    (headers &key context (use-dynamic-p nil)
-                  (huffman nil huffman-supplied-p) stream-id)
-  (when context
-    (%qpack-check-context context))
-  (unless (member use-dynamic-p '(nil t))
-    (%qpack-error "QPACK dynamic-reference selection must be boolean."
-                  use-dynamic-p))
-  (when (and use-dynamic-p (null context))
-    (%qpack-error "A QPACK context is required for dynamic references."))
-  (when (and stream-id
-             (not (and (integerp stream-id)
-                       (<= 0 stream-id +qpack-max-integer+))))
-    (%qpack-error "QPACK stream IDs must be between zero and 2^62-1."
-                  stream-id))
-  (unless (member huffman '(nil t))
-    (when huffman-supplied-p
-      (%qpack-error "QPACK Huffman selection must be boolean." huffman)))
-  (let* ((table (and use-dynamic-p (qpack-context-dynamic-table context)))
-         (state (and table stream-id
-                     (qpack-context-decoder-stream-state context)))
-         (use-huffman (if huffman-supplied-p
-                          huffman
-                          (and context (qpack-context-huffman-p context)))))
-    (qpack-encode-field-section
-     headers
-     :dynamic-table table
-     :decoder-stream-state state
-     :stream-id stream-id
-     :huffman-p use-huffman)))
+(progn
+  (defun qpack-prepare-header-block
+      (headers &key context (use-dynamic-p nil)
+                    (huffman nil huffman-supplied-p) stream-id)
+    (when context
+      (%qpack-check-context context))
+    (unless (member use-dynamic-p '(nil t))
+      (%qpack-error "QPACK dynamic-reference selection must be boolean."
+                    use-dynamic-p))
+    (when use-dynamic-p
+      (unless context
+        (%qpack-error "A QPACK context is required for dynamic references."))
+      (unless stream-id
+        (%qpack-error
+         "QPACK dynamic references require a stream ID for section tracking.")))
+    (when (and stream-id
+               (not (and (integerp stream-id)
+                         (<= 0 stream-id +qpack-max-integer+))))
+      (%qpack-error "QPACK stream IDs must be between zero and 2^62-1."
+                    stream-id))
+    (unless (member huffman '(nil t))
+      (when huffman-supplied-p
+        (%qpack-error "QPACK Huffman selection must be boolean." huffman)))
+    (let* ((revision (if context (qpack-context-revision context) 0))
+           (table (and use-dynamic-p
+                       (qpack-context-dynamic-table context)))
+           (state (and table stream-id
+                       (qpack-context-decoder-stream-state context)))
+           (use-huffman (if huffman-supplied-p
+                            huffman
+                            (and context (qpack-context-huffman-p context)))))
+      (if state
+          (multiple-value-bind (candidate-table candidate-state)
+              (%qpack-copy-context-state context)
+            (multiple-value-bind (section registration)
+                (%qpack-prepare-field-section
+                 headers :dynamic-table candidate-table
+                 :decoder-stream-state candidate-state
+                 :stream-id stream-id :huffman-p use-huffman)
+              (%qpack-commit-field-section registration)
+              (%qpack-check-context-revision context revision)
+              (values
+               section
+               (%make-qpack-encoding-transaction
+                :context context :revision revision
+                :dynamic-table (and registration candidate-table)
+                :decoder-stream-state (and registration candidate-state)))))
+          (multiple-value-bind (section registration)
+              (%qpack-prepare-field-section
+               headers :dynamic-table table
+               :decoder-stream-state state
+               :stream-id stream-id :huffman-p use-huffman)
+            (declare (ignore registration))
+            (when context
+              (%qpack-check-context-revision context revision))
+            (values
+             section
+             (%make-qpack-encoding-transaction
+              :context context :revision revision))))))
+
+  (defun qpack-encode-header-block
+      (headers &key context (use-dynamic-p nil)
+                    (huffman nil huffman-supplied-p) stream-id)
+    (multiple-value-bind (wire transaction)
+        (if huffman-supplied-p
+            (qpack-prepare-header-block
+             headers :context context :use-dynamic-p use-dynamic-p
+             :huffman huffman :stream-id stream-id)
+            (qpack-prepare-header-block
+             headers :context context :use-dynamic-p use-dynamic-p
+             :stream-id stream-id))
+      (qpack-commit-encoding transaction)
+      wire)))
 
 (defun qpack-decode-field-section
     (octets &key dynamic-table max-table-capacity

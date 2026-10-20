@@ -798,3 +798,194 @@
               :to-equalp (list (cons "x-field" "value")))
       (expect (length acknowledged-streams) :to-be 1)
       (expect (first acknowledged-streams) :to-be 19))))
+(describe "QPACK encoder transactions"
+  (it "prepares capacity and insert instructions without changing context"
+    (let ((context (make-qpack-context :max-table-capacity 256
+                                      :table-capacity 0
+                                      :huffman nil)))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 256)
+        (expect wire :to-equalp (octets #x3f #xe1 #x01))
+        (expect (qpack-context-table-capacity context) :to-be 0)
+        (qpack-commit-encoding transaction)
+        (expect (qpack-context-table-capacity context) :to-be 256))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-insert-with-literal-name context "x-test" "one")
+        (expect wire :to-equalp
+                (octets #x46 120 45 116 101 115 116 #x03 111 110 101))
+        (expect (qpack-context-insert-count context) :to-be 0)
+        (expect (qpack-context-dynamic-entry-count context) :to-be 0)
+        (qpack-commit-encoding transaction)
+        (expect (qpack-context-insert-count context) :to-be 1))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-insert-with-name-reference
+           context 0 "two" :static-p nil)
+        (expect wire :to-equalp (octets #x80 #x03 116 119 111))
+        (expect (qpack-context-insert-count context) :to-be 1)
+        (qpack-commit-encoding transaction)
+        (expect (qpack-context-insert-count context) :to-be 2))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-duplicate context 0)
+        (expect wire :to-equalp (octets #x00))
+        (expect (qpack-context-insert-count context) :to-be 2)
+        (qpack-commit-encoding transaction)
+        (expect (qpack-context-insert-count context) :to-be 3))))
+
+  (it "prepares header sections without registration and commits references once"
+    (let ((context (make-qpack-context :max-table-capacity 256
+                                       :table-capacity 256
+                                       :huffman nil)))
+      (qpack-encode-insert-with-literal-name context "x-test" "one"
+                                             :huffman nil)
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-header-block
+           (list (make-http-header "x-test" "one"))
+           :context context :use-dynamic-p t :huffman nil :stream-id 5)
+        (expect wire :to-equalp (octets #x02 #x00 #x80))
+        (expect (qpack-context-insert-count context) :to-be 1)
+        (expect (qpack-context-dynamic-entry-count context) :to-be 1)
+        (qpack-commit-encoding transaction)
+        (signals http-protocol-error
+          (qpack-context-set-capacity context 0))
+        (progn
+          (expect (qpack-decode-decoder-stream context (octets #x85))
+                  :to-equalp '((:section-ack 5)))
+          (qpack-context-set-capacity context 0))
+        (expect (qpack-context-table-capacity context) :to-be 0)
+        (expect (qpack-context-dynamic-entry-count context) :to-be 0))))
+
+  (it "aborts capacity, insertion, and section changes without mutating context"
+    (let ((context (make-qpack-context :max-table-capacity 256
+                                       :table-capacity 256
+                                       :huffman nil)))
+      (qpack-encode-insert-with-literal-name context "x-test" "one"
+                                             :huffman nil)
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 128)
+        (declare (ignore wire))
+        (expect (qpack-abort-encoding transaction) :to-be t)
+        (expect (qpack-context-table-capacity context) :to-be 256))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-insert-with-literal-name context "x-new" "two")
+        (declare (ignore wire))
+        (qpack-abort-encoding transaction)
+        (expect (qpack-context-insert-count context) :to-be 1))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-header-block
+           (list (make-http-header "x-test" "one"))
+           :context context :use-dynamic-p t :huffman nil :stream-id 7)
+        (declare (ignore wire))
+        (qpack-abort-encoding transaction)
+        (let ((reason nil))
+          (handler-case
+              (qpack-commit-encoding transaction)
+            (qpack-encoding-transaction-error (condition)
+              (setf reason
+                    (qpack-encoding-transaction-error-reason condition))))
+          (expect reason :to-be :aborted))
+        (expect (qpack-context-table-capacity context) :to-be 256)
+        (progn
+          (expect (qpack-context-dynamic-entry-count context) :to-be 1)
+          (qpack-context-set-capacity context 0)
+          (expect (qpack-context-table-capacity context) :to-be 0)
+          (expect (qpack-context-dynamic-entry-count context) :to-be 0)))))
+
+  (it "rejects stale and repeated transaction commits"
+    (let ((context (make-qpack-context :max-table-capacity 256
+                                       :table-capacity 0
+                                       :huffman nil)))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 64)
+        (declare (ignore wire))
+        (multiple-value-bind (events used)
+            (qpack-decode-encoder-stream context (octets #x3f #x61))
+          (expect events :to-equalp '((:set-capacity 128)))
+          (expect used :to-be 2))
+        (let ((reason nil))
+          (handler-case
+              (qpack-commit-encoding transaction)
+            (qpack-encoding-transaction-error (condition)
+              (setf reason
+                    (qpack-encoding-transaction-error-reason condition))))
+          (expect reason :to-be :stale))
+        (expect (qpack-context-table-capacity context) :to-be 128))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 64)
+        (declare (ignore wire))
+        (qpack-context-set-capacity context 32)
+        (let ((reason nil))
+          (handler-case
+              (qpack-commit-encoding transaction)
+            (qpack-encoding-transaction-error (condition)
+              (setf reason
+                    (qpack-encoding-transaction-error-reason condition))))
+          (expect reason :to-be :stale))
+        (expect (qpack-context-table-capacity context) :to-be 32))
+      (progn
+  (qpack-context-set-capacity context 64)
+  (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 32)
+        (declare (ignore wire))
+        (qpack-decode-decoder-stream context (octets #x01))
+        (let ((reason nil))
+          (handler-case
+              (qpack-commit-encoding transaction)
+            (qpack-encoding-transaction-error (condition)
+              (setf reason
+                    (qpack-encoding-transaction-error-reason condition))))
+          (expect reason :to-be :stale))
+        (expect (qpack-context-known-received-count context) :to-be 1))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 64)
+        (declare (ignore wire))
+        (qpack-commit-encoding transaction)
+        (let ((reason nil))
+          (handler-case
+              (qpack-commit-encoding transaction)
+            (qpack-encoding-transaction-error (condition)
+              (setf reason
+                    (qpack-encoding-transaction-error-reason condition))))
+          (expect reason :to-be :committed))
+        (expect (qpack-context-table-capacity context) :to-be 64))))
+
+  (it "validates capacity and insertion changes during preparation"
+    (let ((context (make-qpack-context :max-table-capacity 64
+                                       :table-capacity 0
+                                       :huffman nil)))
+      (signals http-protocol-error
+        (qpack-prepare-set-capacity context 65))
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (qpack-context-set-capacity context 64)
+      (signals http-protocol-error
+        (qpack-prepare-insert-with-literal-name
+         context "x" (make-string 40 :initial-element #\a)))
+      (expect (qpack-context-insert-count context) :to-be 0)
+      (expect (qpack-context-table-size context) :to-be 0)))
+  (it "requires a stream ID for dynamic header references"
+    (let* ((context (make-qpack-context :max-table-capacity 256
+                                        :table-capacity 256
+                                        :huffman nil))
+           (headers (list (make-http-header "x-test" "one"))))
+      (qpack-encode-insert-with-literal-name context "x-test" "one"
+                                             :huffman nil)
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-header-block headers :context context :huffman nil)
+        (multiple-value-bind (decoded used required base)
+            (qpack-decode-header-block wire :context context)
+          (expect decoded :to-equalp headers)
+          (expect used :to-be (length wire))
+          (expect required :to-be 0)
+          (expect base :to-be 0))
+        (qpack-commit-encoding transaction))
+      (signals http-protocol-error
+        (qpack-prepare-header-block
+         headers :context context :use-dynamic-p t :huffman nil))
+      (expect (qpack-context-insert-count context) :to-be 1)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 1)
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-header-block
+           headers :context context :use-dynamic-p t
+           :stream-id 9 :huffman nil)
+        (expect wire :to-equalp (octets #x02 #x00 #x80))
+        (qpack-abort-encoding transaction)))))
