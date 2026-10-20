@@ -155,6 +155,7 @@
    #:hpack-context-table-size
    #:hpack-context-dynamic-entry-count
    #:hpack-context-set-max-table-size
+   #:hpack-context-set-decoder-max-table-size
    #:hpack-encode-integer
    #:hpack-decode-integer
    #:hpack-encode-string

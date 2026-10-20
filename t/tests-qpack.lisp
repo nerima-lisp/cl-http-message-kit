@@ -634,4 +634,167 @@
                       (make-http-header "custom-key" "custom-value")))
         (expect used :to-be (length b4-field-section))
         (expect required :to-be 4)
-        (expect base :to-be 4)))))
+        (expect base :to-be 4))))
+  (it "acknowledges immediate dynamic sections after validation"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 0
+                                       :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions
+             (concatenate '(vector (unsigned-byte 8))
+                          capacity-wire insert-wire))
+           (wire (octets 2 0 #xd9 #x80))
+           (acknowledged-streams nil))
+      (qpack-decode-encoder-stream decoder instructions)
+      (expect (qpack-decode-http3-field-section
+               wire adapter 3 :role :response
+               :on-section-acknowledgment
+               (lambda (stream-id)
+                 (push stream-id acknowledged-streams)))
+              :to-equalp
+              (list (cons ":status" "200") (cons "x-field" "value")))
+      (expect (length acknowledged-streams) :to-be 1)
+      (expect (first acknowledged-streams) :to-be 3)))
+  (it "acknowledges a blocked dynamic section once after resume"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 0
+                                       :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions
+             (concatenate '(vector (unsigned-byte 8))
+                          capacity-wire insert-wire))
+           (acknowledged-streams nil)
+           (blocked
+             (qpack-decode-http3-field-section
+              (octets 2 0 #x80) adapter 7 :role :trailers
+              :on-section-acknowledgment
+              (lambda (stream-id)
+                (push stream-id acknowledged-streams)))))
+      (expect (qpack-blocked-stream-p blocked) :to-be t)
+      (expect acknowledged-streams :to-equal nil)
+      (qpack-decode-encoder-stream decoder instructions)
+      (expect (qpack-take-ready-streams adapter) :to-equal (list blocked))
+      (expect (qpack-resume-blocked-stream blocked)
+              :to-equalp (list (cons "x-field" "value")))
+      (expect (length acknowledged-streams) :to-be 1)
+      (expect (first acknowledged-streams) :to-be 7)
+      (signals http-protocol-error
+        (qpack-resume-blocked-stream blocked))
+      (expect (length acknowledged-streams) :to-be 1)))
+  (it "does not acknowledge a static-only field section"
+    (let* ((decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (acknowledged-streams nil))
+      (expect (qpack-decode-http3-field-section
+               (octets 0 0 #xd9) adapter 11 :role :response
+               :on-section-acknowledgment
+               (lambda (stream-id)
+                 (push stream-id acknowledged-streams)))
+              :to-equalp (list (cons ":status" "200")))
+      (expect acknowledged-streams :to-equal nil)))
+  (it "does not acknowledge dynamic sections that fail role validation"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 0
+                                       :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions
+             (concatenate '(vector (unsigned-byte 8))
+                          capacity-wire insert-wire))
+           (acknowledged-streams nil))
+      (qpack-decode-encoder-stream decoder instructions)
+      (signals http-invalid-header
+        (qpack-decode-http3-field-section
+         (octets 2 0 #x80) adapter 13 :role :request
+         :on-section-acknowledgment
+         (lambda (stream-id)
+           (push stream-id acknowledged-streams))))
+      (expect acknowledged-streams :to-equal nil)))
+  (it "does not acknowledge dynamic sections with uppercase names"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 0
+                                       :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions
+             (concatenate '(vector (unsigned-byte 8))
+                          capacity-wire insert-wire))
+           (uppercase-name-wire
+             (octets 2 0 #x80 #x27
+                     88 45 102 105 101 108 100
+                     #x03 98 97 100))
+           (acknowledged-streams nil))
+      (qpack-decode-encoder-stream decoder instructions)
+      (signals http-connection-error
+        (qpack-decode-http3-field-section
+         uppercase-name-wire adapter 17 :role :trailers
+         :on-section-acknowledgment
+         (lambda (stream-id)
+           (push stream-id acknowledged-streams))))
+      (expect acknowledged-streams :to-equal nil)))
+  (it "calls the acknowledgment hook after the decode hook succeeds"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 0
+                                       :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :max-blocked-streams 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-field" "value" :huffman nil))
+           (instructions
+             (concatenate '(vector (unsigned-byte 8))
+                          capacity-wire insert-wire))
+           (hook-completed-p nil)
+           (acknowledged-streams nil))
+      (qpack-decode-encoder-stream decoder instructions)
+      (expect (http-message-kit::decode-http3-qpack-field-section
+               (octets 2 0 #x80) adapter 19
+               :on-decoded
+               (lambda (fields)
+                 (setf hook-completed-p t)
+                 fields)
+               :on-section-acknowledgment
+               (lambda (stream-id)
+                 (expect hook-completed-p :to-be t)
+                 (push stream-id acknowledged-streams)))
+              :to-equalp (list (cons "x-field" "value")))
+      (expect (length acknowledged-streams) :to-be 1)
+      (expect (first acknowledged-streams) :to-be 19))))

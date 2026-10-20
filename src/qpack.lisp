@@ -125,6 +125,7 @@
 (defun decode-http3-qpack-field-section
     (octets context stream-id
      &key (serialize (lambda (thunk) (funcall thunk))) on-decoded
+          on-section-acknowledgment
           (max-header-bytes 65536) (max-fields 256))
   "Decode a field section or return a resumable blocked-stream token."
   (unless (%octet-vector-p octets)
@@ -145,6 +146,11 @@
     (%qpack-error "QPACK serialization must be a function." serialize))
   (unless (or (null on-decoded) (functionp on-decoded))
     (%qpack-error "QPACK decode callbacks must be functions or NIL." on-decoded))
+  (unless (or (null on-section-acknowledgment)
+              (functionp on-section-acknowledgment))
+    (%qpack-error
+     "QPACK section-acknowledgment callbacks must be functions or NIL."
+     on-section-acknowledgment))
   (let ((compressed-limit
           (min 262144 (+ max-header-bytes (* 16 max-fields) 16))))
     (when (> (length octets) compressed-limit)
@@ -154,19 +160,19 @@
              :limit compressed-limit
              :observed (length octets)
              :kind :compressed-headers)))
-  (let (fields blocked)
+  (let (fields blocked required-insert-count)
     (handler-case
         (funcall
          serialize
          (lambda ()
            (handler-case
-               (setf fields
-                     (%qpack-decode-field-section-core
-                      octets
-                      :dynamic-table
-                      (http3-qpack-decoder-context-dynamic-table context)
-                      :max-header-bytes max-header-bytes
-                      :max-fields max-fields))
+               (multiple-value-setq (fields required-insert-count)
+                 (%qpack-decode-field-section-core
+                  octets
+                  :dynamic-table
+                  (http3-qpack-decoder-context-dynamic-table context)
+                  :max-header-bytes max-header-bytes
+                  :max-fields max-fields))
              (qpack-blocked-field-section (condition)
                (setf blocked
                      (%http3-qpack-register-blocked-stream
@@ -179,6 +185,8 @@
                           (decode-http3-qpack-field-section
                            snapshot context stream-id
                            :serialize serialize :on-decoded on-decoded
+                           :on-section-acknowledgment
+                           on-section-acknowledgment
                            :max-header-bytes max-header-bytes
                            :max-fields max-fields)))
                       serialize))))))
@@ -189,9 +197,14 @@
                :detail (list :qpack-decompression-failed condition))))
     (if blocked
         blocked
-        (if on-decoded
-            (funcall on-decoded fields)
-            fields))))
+        (let ((decoded-fields
+                (if on-decoded
+                    (funcall on-decoded fields)
+                    fields)))
+          (when (and on-section-acknowledgment
+                     (plusp required-insert-count))
+            (funcall on-section-acknowledgment stream-id))
+          decoded-fields))))
 
 (defparameter +qpack-static-table+
   (vector
@@ -1207,7 +1220,7 @@ QPACK-BLOCKED-FIELD-SECTION."
                      "QPACK field representation has an invalid prefix."
                      first)))
                  (check-limits)))
-    (nreverse fields))))
+    (values (nreverse fields) required-insert-count base))))
 
 (defun %qpack-process-complete-encoder-stream (table octets)
   "Apply complete QPACK encoder-stream instructions to TABLE.
@@ -1940,6 +1953,7 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
   (defun qpack-decode-http3-field-section
       (octets context stream-id
        &key role (serialize (lambda (thunk) (funcall thunk)))
+            on-section-acknowledgment
             (max-header-bytes 65536) (max-fields 256))
     "Decode and validate an HTTP/3 field section or return a blocked token."
     (%qpack-http3-require-open-context context)
@@ -1949,6 +1963,7 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
         (decode-http3-qpack-field-section
          octets context stream-id
          :serialize serialize
+         :on-section-acknowledgment on-section-acknowledgment
          :on-decoded
          (lambda (fields)
            (ecase role

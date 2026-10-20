@@ -139,6 +139,18 @@
         (hpack-context-table-capacity context) size)
   context)
 
+(defun hpack-context-set-decoder-max-table-size (context size)
+  (%hpack-validate-context context)
+  (%hpack-nonnegative-integer size :max-table-size)
+  (%hpack-codec-call
+   #'hpack-codec:hpack-decoder-set-table-size
+   (hpack-context-decoder context) size)
+  (setf (hpack-context-max-table-size context) size
+        (hpack-context-table-capacity context)
+        (hpack-codec:hpack-table-maximum-size
+         (hpack-context-codec-table context)))
+  context)
+
 (defun %hpack-validate-header-name (name)
   (unless (hpack-codec:hpack-valid-header-name-p name)
     (%hpack-error "HPACK header name is invalid or not lowercase." name))
