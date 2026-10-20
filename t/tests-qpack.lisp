@@ -1050,4 +1050,20 @@
                     (qpack-encoding-transaction-error-reason condition))))
           (expect reason :to-be :stale))
         (expect (qpack-context-max-table-capacity context) :to-be 256)
-        (expect (qpack-context-table-capacity context) :to-be 0)))))
+        (expect (qpack-context-table-capacity context) :to-be 0))))
+  (it "accepts zero and the largest 62-bit maximum capacity"
+    (let ((context (make-qpack-context :max-table-capacity 1
+                                       :table-capacity 0
+                                       :huffman nil)))
+      (qpack-context-set-max-table-capacity context 0)
+      (expect (qpack-context-max-table-capacity context) :to-be 0)
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (signals http-protocol-error
+        (qpack-context-set-capacity context 1))
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (qpack-context-set-max-table-capacity context #x3fffffffffffffff)
+      (expect (qpack-context-max-table-capacity context)
+              :to-be #x3fffffffffffffff)
+      (qpack-context-set-capacity context #x3fffffffffffffff)
+      (expect (qpack-context-table-capacity context)
+              :to-be #x3fffffffffffffff))))

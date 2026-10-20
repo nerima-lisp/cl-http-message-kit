@@ -1545,7 +1545,15 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
      name))
   (%qpack-normalize-name name))
 
-(defstruct (qpack-context (:constructor %make-qpack-context)) (max-table-capacity nil :accessor %qpack-context-max-table-capacity) max-blocked-streams max-header-list-size huffman-p dynamic-table decoder-stream-state blocked-streams (revision 0 :type integer))
+(defstruct (qpack-context (:constructor %make-qpack-context))
+  (%max-table-capacity nil)
+  max-blocked-streams
+  max-header-list-size
+  huffman-p
+  dynamic-table
+  decoder-stream-state
+  blocked-streams
+  (revision 0 :type integer))
 
 (progn
   (defun %qpack-check-context (context)
@@ -1575,7 +1583,7 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
            (state (make-qpack-decoder-stream-state
                    table :blocked-stream-limit max-blocked-streams)))
       (%make-qpack-context
-       :max-table-capacity max-table-capacity
+       :%max-table-capacity max-table-capacity
        :max-blocked-streams max-blocked-streams
        :max-header-list-size max-header-list-size
        :huffman-p huffman
@@ -1587,7 +1595,7 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
     (qpack-dynamic-table-capacity
      (qpack-context-dynamic-table (%qpack-check-context context))))
   (defun qpack-context-max-table-capacity (context)
-    (%qpack-context-max-table-capacity
+    (qpack-context-%max-table-capacity
      (%qpack-check-context context)))
 
   (defun qpack-context-table-size (context)
@@ -1627,8 +1635,8 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
          "QPACK maximum table capacity cannot be below its current capacity."
          capacity))
       (unless (= capacity
-                 (%qpack-context-max-table-capacity checked-context))
-        (setf (%qpack-context-max-table-capacity checked-context) capacity
+                 (qpack-context-%max-table-capacity checked-context))
+        (setf (qpack-context-%max-table-capacity checked-context) capacity
               (qpack-dynamic-table-max-capacity table) capacity)
         (incf (qpack-context-revision checked-context)))
       checked-context))
