@@ -994,4 +994,76 @@
            headers :context context :use-dynamic-p t
            :stream-id 9 :huffman nil)
         (expect wire :to-equalp (octets #x02 #x00 #x80))
-        (qpack-abort-encoding transaction)))))
+        (qpack-abort-encoding transaction))))
+  (it "updates the context and dynamic-table maximum together"
+    (let ((context (make-qpack-context :max-table-capacity 0
+                                       :table-capacity 0
+                                       :huffman nil)))
+      (expect (qpack-context-max-table-capacity context) :to-be 0)
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (qpack-context-set-max-table-capacity context 256)
+      (expect (qpack-context-max-table-capacity context) :to-be 256)
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (qpack-context-set-capacity context 128)
+      (expect (setf (qpack-context-max-table-capacity context) 512)
+              :to-be 512)
+      (expect (qpack-context-max-table-capacity context) :to-be 512)
+      (expect (qpack-context-table-capacity context) :to-be 128)
+      (qpack-context-set-capacity context 512)
+      (expect (qpack-context-table-capacity context) :to-be 512)
+      (signals http-protocol-error
+        (qpack-context-set-capacity context 513))
+      (expect (qpack-context-table-capacity context) :to-be 512)))
+  (it "rejects maximums below current capacity and out-of-range values"
+    (let ((context (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 64
+                                       :huffman nil)))
+      (signals http-protocol-error
+        (qpack-context-set-max-table-capacity context 63))
+      (expect (qpack-context-max-table-capacity context) :to-be 128)
+      (expect (qpack-context-table-capacity context) :to-be 64)
+      (signals http-protocol-error
+        (setf (qpack-context-max-table-capacity context) 63))
+      (expect (qpack-context-max-table-capacity context) :to-be 128)
+      (expect (qpack-context-table-capacity context) :to-be 64)
+      (signals http-protocol-error
+        (qpack-context-set-max-table-capacity context #x4000000000000000))
+      (expect (qpack-context-max-table-capacity context) :to-be 128)
+      (expect (qpack-context-table-capacity context) :to-be 64)
+      (qpack-context-set-capacity context 0)
+      (qpack-context-set-max-table-capacity context 63)
+      (expect (qpack-context-max-table-capacity context) :to-be 63)
+      (expect (qpack-context-table-capacity context) :to-be 0)))
+  (it "invalidates prepared encodings when maximum capacity changes"
+    (let ((context (make-qpack-context :max-table-capacity 128
+                                       :table-capacity 0
+                                       :huffman nil)))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-set-capacity context 64)
+        (declare (ignore wire))
+        (qpack-context-set-max-table-capacity context 256)
+        (let ((reason nil))
+          (handler-case
+              (qpack-commit-encoding transaction)
+            (qpack-encoding-transaction-error (condition)
+              (setf reason
+                    (qpack-encoding-transaction-error-reason condition))))
+          (expect reason :to-be :stale))
+        (expect (qpack-context-max-table-capacity context) :to-be 256)
+        (expect (qpack-context-table-capacity context) :to-be 0))))
+  (it "accepts zero and the largest 62-bit maximum capacity"
+    (let ((context (make-qpack-context :max-table-capacity 1
+                                       :table-capacity 0
+                                       :huffman nil)))
+      (qpack-context-set-max-table-capacity context 0)
+      (expect (qpack-context-max-table-capacity context) :to-be 0)
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (signals http-protocol-error
+        (qpack-context-set-capacity context 1))
+      (expect (qpack-context-table-capacity context) :to-be 0)
+      (qpack-context-set-max-table-capacity context #x3fffffffffffffff)
+      (expect (qpack-context-max-table-capacity context)
+              :to-be #x3fffffffffffffff)
+      (qpack-context-set-capacity context #x3fffffffffffffff)
+      (expect (qpack-context-table-capacity context)
+              :to-be #x3fffffffffffffff))))

@@ -1545,7 +1545,15 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
      name))
   (%qpack-normalize-name name))
 
-(defstruct (qpack-context (:constructor %make-qpack-context)) max-table-capacity max-blocked-streams max-header-list-size huffman-p dynamic-table decoder-stream-state blocked-streams (revision 0 :type integer))
+(defstruct (qpack-context (:constructor %make-qpack-context))
+  (%max-table-capacity nil)
+  max-blocked-streams
+  max-header-list-size
+  huffman-p
+  dynamic-table
+  decoder-stream-state
+  blocked-streams
+  (revision 0 :type integer))
 
 (progn
   (defun %qpack-check-context (context)
@@ -1575,7 +1583,7 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
            (state (make-qpack-decoder-stream-state
                    table :blocked-stream-limit max-blocked-streams)))
       (%make-qpack-context
-       :max-table-capacity max-table-capacity
+       :%max-table-capacity max-table-capacity
        :max-blocked-streams max-blocked-streams
        :max-header-list-size max-header-list-size
        :huffman-p huffman
@@ -1586,6 +1594,9 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
   (defun qpack-context-table-capacity (context)
     (qpack-dynamic-table-capacity
      (qpack-context-dynamic-table (%qpack-check-context context))))
+  (defun qpack-context-max-table-capacity (context)
+    (qpack-context-%max-table-capacity
+     (%qpack-check-context context)))
 
   (defun qpack-context-table-size (context)
     (qpack-dynamic-table-size
@@ -1611,6 +1622,27 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
              capacity)))
       (incf (qpack-context-revision context))
       table))
+  (defun qpack-context-set-max-table-capacity (context capacity)
+    (let* ((checked-context (%qpack-check-context context))
+           (table (qpack-context-dynamic-table checked-context)))
+      (unless (and (integerp capacity)
+                   (<= 0 capacity #x3fffffffffffffff))
+        (%qpack-error
+         "QPACK maximum table capacity must be between zero and 2^62-1."
+         capacity))
+      (when (> (qpack-dynamic-table-capacity table) capacity)
+        (%qpack-error
+         "QPACK maximum table capacity cannot be below its current capacity."
+         capacity))
+      (unless (= capacity
+                 (qpack-context-%max-table-capacity checked-context))
+        (setf (qpack-context-%max-table-capacity checked-context) capacity
+              (qpack-dynamic-table-max-capacity table) capacity)
+        (incf (qpack-context-revision checked-context)))
+      checked-context))
+  (defun (setf qpack-context-max-table-capacity) (capacity context)
+    (qpack-context-set-max-table-capacity context capacity)
+    capacity)
   (define-condition qpack-encoding-transaction-error (http-error)
     ((reason :initarg :reason
              :reader qpack-encoding-transaction-error-reason)))
