@@ -18,6 +18,12 @@
   uncertain. Existing state-mutating `qpack-encode-*` operations still update
   context immediately. Header-block preparation requires `:stream-id` when
   dynamic references are enabled.
+- `qpack-context-set-max-table-capacity` and its SETF accessor update the
+  context maximum and backing dynamic-table limit together without changing
+  current capacity. To lower the maximum below current capacity, first reduce
+  current capacity with `qpack-context-set-capacity`; an invalid maximum is
+  rejected without changing either limit. Changing the maximum invalidates
+  outstanding prepared QPACK encodings.
 - Explicit request targets are accepted when they contain visible ASCII. Their
   form-specific syntax is checked by the HTTP parser on input and by a
   serializer or header-section validator before output.

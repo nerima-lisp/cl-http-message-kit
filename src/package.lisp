@@ -176,6 +176,7 @@
    #:qpack-context-insert-count
    #:qpack-context-known-received-count
    #:qpack-context-set-capacity
+   #:qpack-context-set-max-table-capacity
    #:qpack-encode-set-capacity
    #:qpack-encode-insert-with-name-reference
    #:qpack-encode-insert-with-literal-name
