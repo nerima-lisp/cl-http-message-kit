@@ -244,4 +244,4 @@
    #:http-qpack-blocked
    #:http-qpack-blocked-required-insert-count
    #:http-qpack-blocked-available-insert-count
-   #:http-qpack-blocked-stream-id #:http-request-protocol))
+   #:http-qpack-blocked-stream-id #:http-request-protocol #:qpack-encoding-transaction #:qpack-encoding-transaction-p #:qpack-encoding-transaction-error #:qpack-encoding-transaction-error-reason #:qpack-prepare-set-capacity #:qpack-prepare-insert-with-name-reference #:qpack-prepare-insert-with-literal-name #:qpack-prepare-duplicate #:qpack-prepare-header-block #:qpack-commit-encoding #:qpack-abort-encoding))

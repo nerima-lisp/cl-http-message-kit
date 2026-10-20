@@ -143,6 +143,7 @@ calls:
 | HTTP/2 and HTTP/3 framing | `make-http-frame`, `http2-encode-frame`, `-decode-frame`, `-encode-settings`, `-decode-settings`, `http3-encode-frame`, `-decode-frame`, `-encode-varint`, `-decode-varint`, `-encode-settings`, `-decode-settings`, `http-validate-header-section` |
 | HPACK (HTTP/2) | `make-hpack-context`, `hpack-encode-header-block` (`:static-only-p`, `:sensitive-predicate`), `-decode-header-block` (`:max-fields`, `:max-header-bytes`, `:validate-header-names`), `hpack-encode-integer`, `-decode-integer`, `-encode-string`, `-decode-string` |
 | QPACK (HTTP/3) | `make-qpack-context`, `qpack-encode-header-block`, `qpack-decode-header-block`, `qpack-encode-set-capacity`, `qpack-encode-insert-with-name-reference`, `qpack-encode-insert-with-literal-name`, `qpack-encode-duplicate`, `qpack-decode-encoder-stream`, `qpack-decode-decoder-stream`, `qpack-encode-section-ack`, `qpack-encode-stream-cancellation`, `qpack-encode-insert-count-increment`, `qpack-make-http3-decoder-context`, `qpack-decode-http3-field-section`, `qpack-blocked-stream-p`, `qpack-take-ready-streams`, `qpack-resume-blocked-stream`, `qpack-cancel-blocked-stream`, `qpack-close-http3-decoder-context` |
+| QPACK encoder transactions | `qpack-prepare-set-capacity`, `qpack-prepare-insert-with-name-reference`, `qpack-prepare-insert-with-literal-name`, `qpack-prepare-duplicate`, `qpack-prepare-header-block`, `qpack-commit-encoding`, `qpack-abort-encoding` |
 | Status | `http-status-reason` and the five informational/success/redirection/client-error/server-error predicates |
 | Limits and deadlines | `http-check-size-limit`, `*default-max-header-bytes*`, `*default-max-body-bytes*`, `http-deadline`, `with-http-deadline` |
 | Conditions | `http-error`, `http-protocol-error`, `http-invalid-uri`, `http-invalid-header`, `http-invalid-status`, `http-connection-error`, `http-timeout`, `http-size-limit-exceeded`, `http-unsupported-feature`, `http-incomplete-message`, `http-invalid-framing`, `http-invalid-frame`, `http-qpack-blocked` |
@@ -230,6 +231,32 @@ but not the allowed names, required fields, or order for a section. The HTTP/3
 adapter below requires a section role and validates every decoded section,
 including after a blocked section resumes.
 
+### QPACK encoder transactions
+
+Use the `qpack-prepare-*` operations when encoded bytes must stay in step with
+transport state. Each returns `(values wire-octets transaction)` and leaves the
+context unchanged. The prepare operations cover capacity changes, all encoder
+stream insert instructions, and header blocks. Header-block preparation
+requires `:stream-id` when `:use-dynamic-p t` so commit can register its
+dynamic references; preparation with dynamic references disabled works without
+a stream ID. Hold the connection's QPACK serialization lock across preparation,
+the complete write, and commit or
+abort. After the write succeeds, pass the transaction to
+`(qpack-commit-encoding transaction)`; it applies the prepared table and
+outstanding-section changes. If the transport proves that zero bytes were
+sent, pass it to `(qpack-abort-encoding transaction)`. If any bytes may have
+been sent or delivery is uncertain, close the connection and discard both the
+encoder and decoder QPACK contexts.
+
+Transactions are single-use. A commit after another serialized context change
+signals `qpack-encoding-transaction-error`; its
+`qpack-encoding-transaction-error-reason` is `:stale`. The same connection
+lock should prevent changes during a write; the revision check catches a
+context change made outside that serialized operation. A second commit or a
+commit after abort signals the same condition with reason `:committed` or
+`:aborted`. The existing state-mutating `qpack-encode-*` operations keep their
+immediate behavior and commit context changes before returning wire bytes.
+
 ### HTTP/3 QPACK transport adapter
 
 Create one decoder `qpack-context` and wrap it in an adapter context. The
@@ -290,8 +317,9 @@ does not retarget waiters. Remove each association after resume or cancellation.
 
 The adapter manages field-section decoding and cancellation, not the full
 QPACK feedback path. The transport must send `qpack-encode-section-ack` after
-successfully decoding a field section that used dynamic table references; it
-may use `qpack-encode-insert-count-increment` to report encoder-stream inserts.
+successfully decoding and validating a field section that used dynamic table
+references; it may use `qpack-encode-insert-count-increment` to report
+encoder-stream inserts.
 The Encoded Required Insert Count in the field-section prefix is zero when the
 section has no dynamic references and nonzero when it does. Use
 `qpack-decode-decoder-stream` on the matching encoder `qpack-context` to
@@ -316,16 +344,24 @@ decoder context, queued tokens, and token-to-waiter associations. Connection
 close sends no Stream Cancellation instruction.
 
 If sending a cancellation instruction fails or delivery is uncertain, close
-the connection and discard both QPACK contexts. Keep the local cleanup; do not
-restore tokens, table entries, insert counts, or outstanding references. QPACK
-encoding is not transactional: if a field section or encoder instruction may
-have been partially sent, discard both contexts rather than rolling state
-back. Even if the transport proves that zero bytes were sent, close the
-connection and discard both contexts because this release has no operation
-that safely rolls back all related state. The transport may remove its own
-unsent byte buffer.
+the connection and discard both the encoder and decoder QPACK contexts. Keep
+the local cleanup; do not restore tokens, table entries, insert counts, or
+outstanding references. Cancellation and close cleanup are outside the
+prepare/commit API, so this guidance still applies if the transport proves that
+zero bytes were sent.
 
-Allocation failure during encoder-stream processing can leave the dynamic table partially updated; close the connection and discard both QPACK contexts because this release does not roll back partial table changes.
+With the immediate `qpack-encode-*` APIs, a field section or encoder
+instruction that may have been partially sent requires discarding both the
+encoder and decoder QPACK contexts. Even if the transport proves that zero
+bytes were sent, close the connection and discard both because the immediate
+APIs have already changed their state. With the prepare/commit APIs, a proven
+zero-byte write can be aborted safely. The transport may remove its own unsent
+byte buffer.
+
+Encoder-stream instructions are applied in order, so an allocation failure
+while applying a later instruction can leave earlier dynamic-table changes
+committed. Close the connection and discard both the encoder and decoder QPACK
+contexts; this release does not roll back those changes.
 
 HPACK decoding accepts per-call `:max-fields` and `:max-header-bytes` limits;
 each can only tighten the configured context limit. `:validate-header-names t`
