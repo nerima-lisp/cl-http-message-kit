@@ -20,6 +20,7 @@
   (it "applies encoder-stream inserts before decoding dynamic references"
     (let* ((encoder (make-qpack-context :max-table-capacity 256
                                          :table-capacity 256
+                                         :max-blocked-streams 1
                                          :huffman nil))
            (decoder (make-qpack-context :max-table-capacity 256
                                          :table-capacity 256
@@ -35,6 +36,7 @@
              (wire (qpack-encode-header-block headers
                                                :context encoder
                                                :use-dynamic-p t
+                                               :stream-id 4
                                                :huffman nil)))
         (multiple-value-bind (decoded used required base)
             (qpack-decode-header-block wire :context decoder)
@@ -46,6 +48,7 @@
   (it "signals blocked sections until the required insert arrives"
     (let* ((encoder (make-qpack-context :max-table-capacity 256
                                          :table-capacity 256
+                                         :max-blocked-streams 1
                                          :huffman nil))
            (empty-decoder (make-qpack-context :max-table-capacity 256
                                                :table-capacity 256
@@ -56,6 +59,7 @@
                    (list (make-http-header "x-blocked" "yes"))
                    :context encoder
                    :use-dynamic-p t
+                   :stream-id 6
                    :huffman nil)))
         (signals http-qpack-blocked
           (qpack-decode-header-block wire :context empty-decoder)))))
@@ -834,6 +838,7 @@
   (it "prepares header sections without registration and commits references once"
     (let ((context (make-qpack-context :max-table-capacity 256
                                        :table-capacity 256
+                                       :max-blocked-streams 1
                                        :huffman nil)))
       (qpack-encode-insert-with-literal-name context "x-test" "one"
                                              :huffman nil)
@@ -965,6 +970,7 @@
   (it "requires a stream ID for dynamic header references"
     (let* ((context (make-qpack-context :max-table-capacity 256
                                         :table-capacity 256
+                                        :max-blocked-streams 1
                                         :huffman nil))
            (headers (list (make-http-header "x-test" "one"))))
       (qpack-encode-insert-with-literal-name context "x-test" "one"
