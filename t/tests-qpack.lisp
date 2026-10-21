@@ -65,11 +65,24 @@
           (qpack-decode-header-block wire :context empty-decoder)))))
 
   (it "round trips decoder-stream control instructions"
-    (let ((context (make-qpack-context :huffman nil)))
+    (let* ((context (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 128
+                                        :max-blocked-streams 1
+                                        :huffman nil))
+           (headers (list (make-http-header "x" "v"))))
+      (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
+      (let ((wire (qpack-encode-header-block
+                   headers :context context :use-dynamic-p t
+                   :stream-id 7 :huffman nil)))
+        (multiple-value-bind (decoded used required)
+            (qpack-decode-header-block wire :context context :stream-id 7)
+          (declare (ignore used))
+          (expect decoded :to-equalp headers)
+          (expect required :to-be 1)))
       (dolist (spec (list (list (qpack-encode-section-ack 7)
-                                '((:section-ack 7)))
+                                (list (list :section-ack 7)))
                           (list (qpack-encode-stream-cancellation 9)
-                                '((:stream-cancellation 9)))))
+                                (list (list :stream-cancellation 9)))))
         (multiple-value-bind (events used)
             (qpack-decode-decoder-stream context (first spec))
           (expect events :to-equalp (second spec))
@@ -245,18 +258,33 @@
 
   (it "encodes and decodes the 62-bit stream ID maximum"
     (let* ((stream-id (1- (ash 1 62)))
-           (context (make-qpack-context :huffman nil))
-           (instructions
-             (list
-              (list (qpack-encode-section-ack stream-id)
-                    (list (list :section-ack stream-id)))
-              (list (qpack-encode-stream-cancellation stream-id)
-                    (list (list :stream-cancellation stream-id))))))
-      (dolist (spec instructions)
-        (multiple-value-bind (events used)
-            (qpack-decode-decoder-stream context (first spec))
-          (expect events :to-equalp (second spec))
-          (expect used :to-be (length (first spec)))))))
+           (context (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 128
+                                        :max-blocked-streams 1
+                                        :huffman nil))
+           (headers (list (make-http-header "x" "v"))))
+      (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
+      (let ((wire (qpack-encode-header-block
+                   headers :context context :use-dynamic-p t
+                   :stream-id stream-id :huffman nil)))
+        (multiple-value-bind (decoded used required)
+            (qpack-decode-header-block wire :context context :stream-id stream-id)
+          (declare (ignore used))
+          (expect decoded :to-equalp headers)
+          (expect required :to-be 1)))
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream
+           context (qpack-encode-section-ack stream-id))
+        (expect events :to-equalp (list (list :section-ack stream-id)))
+        (expect used :to-be
+                (length (qpack-encode-section-ack stream-id))))
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream
+           context (qpack-encode-stream-cancellation stream-id))
+        (expect events :to-equalp
+                (list (list :stream-cancellation stream-id)))
+        (expect used :to-be
+                (length (qpack-encode-stream-cancellation stream-id))))))
 
   (it "rejects malformed and out-of-range QPACK integers"
     (let ((context (make-qpack-context :huffman nil)))
@@ -1067,3 +1095,351 @@
       (qpack-context-set-capacity context #x3fffffffffffffff)
       (expect (qpack-context-table-capacity context)
               :to-be #x3fffffffffffffff))))
+(describe "QPACK wire boundary contracts"
+  (it "returns octet vectors, decodes empty sections, and rejects malformed references"
+    (let ((wire
+            (qpack-encode-header-block
+             (list (make-http-header "x-test" "value"))
+             :huffman nil)))
+      (expect (array-element-type wire) :to-equalp '(unsigned-byte 8)))
+    (multiple-value-bind (headers used required base)
+        (qpack-decode-header-block (octets 0 0))
+      (expect headers :to-equalp nil)
+      (expect used :to-be 2)
+      (expect required :to-be 0)
+      (expect base :to-be 0))
+    (signals http-protocol-error
+      (qpack-decode-header-block (octets #x01 #x00)))
+    (signals http-protocol-error
+      (qpack-decode-header-block (octets 0 0 #x10))))
+
+  (it "accepts digit-prefixed names and rejects empty pseudo-names"
+    (let* ((header (make-http-header "9X-0123456789" "value"))
+           (wire (qpack-encode-header-block (list header) :huffman nil)))
+      (expect (qpack-decode-header-block wire)
+              :to-equalp
+              (list (make-http-header "9x-0123456789" "value"))))
+    (signals http-protocol-error
+      (qpack-decode-header-block
+       (octets #x00 #x00 #x21 #x3a #x05 118 97 108 117 101))))
+
+  (it "wraps required insert counts and rejects invalid prefixes"
+    (let ((context (make-qpack-context :max-table-capacity 64
+                                       :table-capacity 64
+                                       :max-blocked-streams 1
+                                       :huffman nil))
+          (headers (list (make-http-header "x" "v"))))
+      (loop for count from 1 to 8
+            do (qpack-encode-insert-with-literal-name
+                context "x" "v" :huffman nil)
+               (let ((wire (qpack-encode-header-block
+                            headers :context context :use-dynamic-p t
+                            :stream-id count :huffman nil)))
+                 (expect (aref wire 0) :to-be (1+ (mod count 4)))
+                 (multiple-value-bind (decoded used required base)
+                     (qpack-decode-header-block
+                      wire :context context :stream-id count)
+                   (expect decoded :to-equalp headers)
+                   (expect used :to-be (length wire))
+                   (expect required :to-be count)
+                   (expect base :to-be count)))
+               (qpack-decode-decoder-stream
+                context (qpack-encode-section-ack count)))
+      (signals http-protocol-error
+        (qpack-decode-header-block (octets #x05 #x00) :context context))))
+
+  (it "encodes and decodes Delta Base signs at 7-bit integer boundaries"
+    (let ((context (make-qpack-context :max-table-capacity 8192
+                                       :table-capacity 8192
+                                       :max-blocked-streams 2
+                                       :huffman nil)))
+      (loop for index from 0 below 128
+            do (qpack-encode-insert-with-literal-name
+                context "x" (format nil "v~D" index) :huffman nil))
+      (expect (qpack-encode-header-block
+               (list (make-http-header "x" "v0"))
+               :context context :use-dynamic-p t :stream-id 1 :huffman nil)
+              :to-equalp (octets #x02 #x7f #x00 #xbf #x40))
+      (qpack-encode-insert-with-literal-name
+       context "x" "v128" :huffman nil)
+      (expect (qpack-encode-header-block
+               (list (make-http-header "x" "v0"))
+               :context context :use-dynamic-p t :stream-id 2 :huffman nil)
+              :to-equalp (octets #x02 #x7f #x01 #xbf #x41)))
+    (let ((context (make-qpack-context :max-table-capacity 64
+                                       :table-capacity 64
+                                       :huffman nil)))
+      (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
+      (dolist (spec
+                (list (list (octets #x02 #x7f #x00 #xbf #x40) 1 128)
+                      (list (octets #x02 #x7f #x01 #xbf #x41) 1 129)))
+        (multiple-value-bind (headers used required base)
+            (qpack-decode-header-block (first spec) :context context)
+          (expect headers :to-equalp (list (make-http-header "x" "v")))
+          (expect used :to-be (length (first spec)))
+          (expect required :to-be (second spec))
+          (expect base :to-be (third spec)))))
+    (let ((context (make-qpack-context :max-table-capacity 16384
+                                       :table-capacity 16384
+                                       :huffman nil)))
+      (loop for index from 0 below 257
+            do (qpack-encode-insert-with-literal-name
+                context "x" (format nil "v~D" index) :huffman nil))
+      (dolist (spec
+                (list (list (octets #xff #x02 #xff #x00 #xbf #x40) 256 128)
+                      (list (octets #xff #x03 #xff #x01 #xbf #x40) 257 128)))
+        (multiple-value-bind (headers used required base)
+            (qpack-decode-header-block (first spec) :context context)
+          (expect headers :to-equalp (list (make-http-header "x" "v0")))
+          (expect used :to-be (length (first spec)))
+          (expect required :to-be (second spec))
+          (expect base :to-be (third spec))))))
+
+  (it "reports blocked insert diagnostics and resumes after insertion"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 128
+                                        :max-blocked-streams 1
+                                        :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 128
+                                        :max-blocked-streams 1
+                                        :huffman nil))
+           (headers (list (make-http-header "x-blocked" "yes")))
+           (insert-wire (qpack-encode-insert-with-literal-name
+                         encoder "x-blocked" "yes" :huffman nil))
+           (wire (qpack-encode-header-block
+                  headers :context encoder :use-dynamic-p t
+                  :stream-id 7 :huffman nil))
+           (blocked-p nil))
+      (handler-case
+          (qpack-decode-header-block wire :context decoder :stream-id 7)
+        (http-qpack-blocked (condition)
+          (setf blocked-p t)
+          (expect (http-qpack-blocked-required-insert-count condition)
+                  :to-be 1)
+          (expect (http-qpack-blocked-available-insert-count condition)
+                  :to-be 0)
+          (expect (http-qpack-blocked-stream-id condition) :to-be 7)
+          (expect (http-error-message condition)
+                  :to-equal
+                  "QPACK field section is blocked on dynamic-table insertions.")
+          (expect (princ-to-string condition)
+                  :to-equal
+                  "QPACK field section is blocked on dynamic-table insertions.")))
+      (expect blocked-p :to-be t)
+      (expect (qpack-context-insert-count decoder) :to-be 0)
+      (multiple-value-bind (events used)
+          (qpack-decode-encoder-stream decoder insert-wire)
+        (expect events :to-equalp
+                (list (list :insert "x-blocked" "yes" 0 :huffman nil)))
+        (expect used :to-be (length insert-wire)))
+      (expect (qpack-context-insert-count decoder) :to-be 1)
+      (expect (qpack-decode-header-block
+               wire :context decoder :stream-id 7)
+              :to-equalp headers)))
+
+  (it "keeps protected entries and insertion state unchanged on eviction failure"
+    (let* ((context (make-qpack-context :max-table-capacity 68
+                                        :table-capacity 68
+                                        :max-blocked-streams 1
+                                        :huffman nil))
+           (headers (list (make-http-header "x" "a"))))
+      (qpack-encode-insert-with-literal-name context "x" "a" :huffman nil)
+      (qpack-encode-insert-with-literal-name context "y" "b" :huffman nil)
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-header-block
+           headers :context context :use-dynamic-p t :stream-id 5
+           :huffman nil)
+        (qpack-commit-encoding transaction)
+        (expect (qpack-decode-header-block
+                 wire :context context :stream-id 5)
+                :to-equalp headers))
+      (signals http-protocol-error
+        (qpack-prepare-insert-with-literal-name context "z" "c"))
+      (expect (qpack-context-insert-count context) :to-be 2)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+      (expect (qpack-context-table-size context) :to-be 68)
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-header-block
+           headers :context context :use-dynamic-p t :stream-id 5
+           :huffman nil)
+        (qpack-commit-encoding transaction)
+        (expect (qpack-decode-header-block
+                 wire :context context :stream-id 5)
+                :to-equalp headers))
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream context (octets #x85))
+        (expect events :to-equalp (list (list :section-ack 5)))
+        (expect used :to-be 1))
+      (signals http-protocol-error
+        (qpack-context-set-capacity context 34))
+      (expect (qpack-context-table-capacity context) :to-be 68)
+      (expect (qpack-context-table-size context) :to-be 68)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream context (octets #x85))
+        (expect events :to-equalp (list (list :section-ack 5)))
+        (expect used :to-be 1))
+      (multiple-value-bind (wire transaction)
+          (qpack-prepare-insert-with-literal-name context "z" "c")
+        (declare (ignore wire))
+        (qpack-commit-encoding transaction))
+      (expect (qpack-context-insert-count context) :to-be 3)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+      (expect (qpack-context-table-size context) :to-be 68)))
+
+  (it "retains shared references until every section is acknowledged or cancelled"
+    (let* ((context (make-qpack-context :max-table-capacity 68
+                                        :table-capacity 68
+                                        :max-blocked-streams 2
+                                        :huffman nil))
+           (headers (list (make-http-header "x" "a"))))
+      (qpack-encode-insert-with-literal-name context "x" "a" :huffman nil)
+      (qpack-encode-insert-with-literal-name context "y" "b" :huffman nil)
+      (dolist (stream-id (list 1 3))
+        (multiple-value-bind (wire transaction)
+            (qpack-prepare-header-block
+             headers :context context :use-dynamic-p t
+             :stream-id stream-id :huffman nil)
+          (qpack-commit-encoding transaction)
+          (expect (qpack-decode-header-block
+                   wire :context context :stream-id stream-id)
+                  :to-equalp headers)))
+      (expect (qpack-decode-decoder-stream
+               context (qpack-encode-section-ack 1))
+              :to-equalp (list (list :section-ack 1)))
+      (let ((failure nil)
+            (known-received-count
+              (qpack-context-known-received-count context)))
+        (handler-case
+            (qpack-decode-decoder-stream
+             context (qpack-encode-section-ack 1))
+          (http-protocol-error (condition)
+            (setf failure condition)))
+        (expect (and failure (http-protocol-error-detail failure))
+                :to-equalp
+                (list :qpack-decoder-stream-error
+                      :section-acknowledgment 1))
+        (expect (qpack-context-known-received-count context)
+                :to-be known-received-count))
+      (expect (qpack-context-table-capacity context) :to-be 68)
+      (expect (qpack-context-table-size context) :to-be 68)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+      (signals http-protocol-error
+        (qpack-context-set-capacity context 34))
+      (expect (qpack-context-table-capacity context) :to-be 68)
+      (expect (qpack-context-table-size context) :to-be 68)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+      (expect (qpack-decode-decoder-stream
+               context (qpack-encode-stream-cancellation 3))
+              :to-equalp (list (list :stream-cancellation 3)))
+      (qpack-context-set-capacity context 34)
+      (expect (qpack-context-table-capacity context) :to-be 34)
+      (expect (qpack-context-table-size context) :to-be 34)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 1)))
+
+  (it "never indexes sensitive values when matching dynamic names exist"
+    (dolist (huffman (list nil t))
+      (let ((context (make-qpack-context :max-table-capacity 256
+                                         :table-capacity 256
+                                         :max-blocked-streams 1
+                                         :huffman huffman)))
+        (qpack-encode-insert-with-literal-name
+         context "proxy-authorization" "replacement" :huffman nil)
+        (qpack-encode-insert-with-literal-name
+         context "x-unrelated" "value" :huffman nil)
+        (let* ((headers (list (make-http-header
+                               "proxy-authorization" "replacement")))
+               (before-size (qpack-context-table-size context))
+               (wire (qpack-encode-header-block
+                      headers :context context :use-dynamic-p t :stream-id 17
+                      :huffman huffman))
+               (field-line (aref wire 2))
+               (n-bit-mask (if (logbitp 6 field-line) #x20 #x10)))
+          (expect (logbitp 7 field-line) :to-be nil)
+          (expect (logand field-line n-bit-mask) :to-be n-bit-mask)
+          (expect (qpack-decode-header-block wire :context context)
+                  :to-equalp headers)
+          (expect (qpack-context-insert-count context) :to-be 2)
+          (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+          (expect (qpack-context-table-size context) :to-be before-size)))))
+
+  (it "rejects unavailable and evicted dynamic references"
+    (signals http-protocol-error
+      (qpack-decode-header-block (octets #x02 #x00 #x80)))
+    (let* ((encoder (make-qpack-context :max-table-capacity 64
+                                        :table-capacity 64
+                                        :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 64
+                                        :table-capacity 0
+                                        :huffman nil))
+           (capacity-wire (qpack-encode-set-capacity encoder 64))
+           (old-insert (qpack-encode-insert-with-literal-name
+                        encoder "x-old" "v" :huffman nil))
+           (new-insert (qpack-encode-insert-with-literal-name
+                        encoder "x-new" "v" :huffman nil))
+           (instructions
+             (concatenate '(vector (unsigned-byte 8))
+                          capacity-wire old-insert new-insert)))
+      (qpack-decode-encoder-stream decoder instructions)
+      (expect (qpack-context-insert-count decoder) :to-be 2)
+      (expect (qpack-context-dynamic-entry-count decoder) :to-be 1)
+      (expect (qpack-context-table-size decoder) :to-be 38)
+      (signals http-protocol-error
+        (qpack-decode-header-block
+         (octets #x02 #x00 #x81) :context decoder))
+      (expect (qpack-context-insert-count decoder) :to-be 2)
+      (expect (qpack-context-dynamic-entry-count decoder) :to-be 1)
+      (expect (qpack-context-table-size decoder) :to-be 38)))
+
+  (it "limits blocked references using the known received insert count"
+    (dolist (increment (list nil t))
+      (let* ((context (make-qpack-context :max-table-capacity 128
+                                          :table-capacity 128
+                                          :max-blocked-streams 1
+                                          :huffman nil))
+             (first-fields (list (make-http-header "x-a" "one")))
+             (second-fields (list (make-http-header "x-b" "two"))))
+        (qpack-encode-insert-with-literal-name context "x-a" "one" :huffman nil)
+        (qpack-encode-insert-with-literal-name context "x-b" "two" :huffman nil)
+        (let ((wire (qpack-encode-header-block
+                     first-fields :context context :use-dynamic-p t
+                     :stream-id 4 :huffman nil)))
+          (expect (subseq wire 0 2) :to-equalp (octets 2 1))
+          (expect (qpack-decode-header-block wire :context context)
+                  :to-equalp first-fields))
+        (when increment
+          (expect (qpack-decode-decoder-stream
+                   context (qpack-encode-insert-count-increment 1))
+                  :to-equalp (list (list :insert-count-increment 1))))
+        (let ((wire (qpack-encode-header-block
+                     second-fields :context context :use-dynamic-p t
+                     :stream-id 8 :huffman nil)))
+          (expect (subseq wire 0 2)
+                  :to-equalp (if increment (octets 3 0) (octets 0 0)))
+          (expect (qpack-decode-header-block wire :context context)
+                  :to-equalp second-fields))
+        (expect (qpack-context-known-received-count context)
+                :to-be (if increment 1 0))
+        (expect (qpack-context-insert-count context) :to-be 2)
+        (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+        (expect (qpack-decode-decoder-stream
+                 context (qpack-encode-section-ack 4))
+                :to-equalp (list (list :section-ack 4)))
+        (expect (qpack-context-known-received-count context) :to-be 1)
+        (if increment
+            (progn
+              (signals http-protocol-error
+                (qpack-context-set-capacity context 0))
+              (expect (qpack-context-table-capacity context) :to-be 128)
+              (expect (qpack-context-table-size context) :to-be 76)
+              (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+              (expect (qpack-decode-decoder-stream
+                       context (qpack-encode-section-ack 8))
+                      :to-equalp (list (list :section-ack 8))))
+            (qpack-context-set-capacity context 0))
+        (when increment
+          (qpack-context-set-capacity context 0))
+        (expect (qpack-context-table-capacity context) :to-be 0)
+        (expect (qpack-context-table-size context) :to-be 0)
+        (expect (qpack-context-dynamic-entry-count context) :to-be 0)))))

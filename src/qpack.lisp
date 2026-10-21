@@ -1892,14 +1892,17 @@ With ALLOW-INCOMPLETE-P, a final partial instruction is left unconsumed."
     (case (first event)
       (:section-acknowledgment
        (let ((outstanding (gethash stream-id sections)))
-         (when outstanding
-           (setf (qpack-decoder-stream-state-known-received-count state)
-                 (max (qpack-decoder-stream-state-known-received-count state)
-                      (caar outstanding)))
-           (%qpack-release-section state (first outstanding))
-           (if (rest outstanding)
-               (setf (gethash stream-id sections) (rest outstanding))
-               (remhash stream-id sections)))))
+         (unless outstanding
+           (%qpack-error
+            "QPACK decoder stream section acknowledgment has no outstanding field section."
+            (list :qpack-decoder-stream-error :section-acknowledgment stream-id)))
+         (setf (qpack-decoder-stream-state-known-received-count state)
+               (max (qpack-decoder-stream-state-known-received-count state)
+                    (caar outstanding)))
+         (%qpack-release-section state (first outstanding))
+         (if (rest outstanding)
+             (setf (gethash stream-id sections) (rest outstanding))
+             (remhash stream-id sections))))
       (:stream-cancellation
        (let ((outstanding (gethash stream-id sections)))
          (when outstanding
