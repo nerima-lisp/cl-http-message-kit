@@ -1120,7 +1120,24 @@
       (signals http-protocol-error
         (qpack-decode-header-block (octets #x05 #x00) :context context))))
 
-  (it "decodes Delta Base signs at 7-bit integer boundaries"
+  (it "encodes and decodes Delta Base signs at 7-bit integer boundaries"
+    (let ((context (make-qpack-context :max-table-capacity 8192
+                                       :table-capacity 8192
+                                       :max-blocked-streams 2
+                                       :huffman nil)))
+      (loop for index from 0 below 128
+            do (qpack-encode-insert-with-literal-name
+                context "x" (format nil "v~D" index) :huffman nil))
+      (expect (qpack-encode-header-block
+               (list (make-http-header "x" "v0"))
+               :context context :use-dynamic-p t :stream-id 1 :huffman nil)
+              :to-equalp (octets #x02 #x7f #x00 #xbf #x40))
+      (qpack-encode-insert-with-literal-name
+       context "x" "v128" :huffman nil)
+      (expect (qpack-encode-header-block
+               (list (make-http-header "x" "v0"))
+               :context context :use-dynamic-p t :stream-id 2 :huffman nil)
+              :to-equalp (octets #x02 #x7f #x01 #xbf #x41)))
     (let ((context (make-qpack-context :max-table-capacity 64
                                        :table-capacity 64
                                        :huffman nil)))
