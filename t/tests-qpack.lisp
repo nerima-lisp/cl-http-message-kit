@@ -67,15 +67,18 @@
   (it "round trips decoder-stream control instructions"
     (let* ((context (make-qpack-context :max-table-capacity 128
                                         :table-capacity 128
+                                        :max-blocked-streams 1
                                         :huffman nil))
            (headers (list (make-http-header "x" "v"))))
       (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
       (let ((wire (qpack-encode-header-block
                    headers :context context :use-dynamic-p t
                    :stream-id 7 :huffman nil)))
-        (expect (qpack-decode-header-block
-                 wire :context context :stream-id 7)
-                :to-equalp headers))
+        (multiple-value-bind (decoded used required)
+            (qpack-decode-header-block wire :context context :stream-id 7)
+          (declare (ignore used))
+          (expect decoded :to-equalp headers)
+          (expect required :to-be 1)))
       (dolist (spec (list (list (qpack-encode-section-ack 7)
                                 (list (list :section-ack 7)))
                           (list (qpack-encode-stream-cancellation 9)
@@ -257,15 +260,18 @@
     (let* ((stream-id (1- (ash 1 62)))
            (context (make-qpack-context :max-table-capacity 128
                                         :table-capacity 128
+                                        :max-blocked-streams 1
                                         :huffman nil))
            (headers (list (make-http-header "x" "v"))))
       (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
       (let ((wire (qpack-encode-header-block
                    headers :context context :use-dynamic-p t
                    :stream-id stream-id :huffman nil)))
-        (expect (qpack-decode-header-block
-                 wire :context context :stream-id stream-id)
-                :to-equalp headers))
+        (multiple-value-bind (decoded used required)
+            (qpack-decode-header-block wire :context context :stream-id stream-id)
+          (declare (ignore used))
+          (expect decoded :to-equalp headers)
+          (expect required :to-be 1)))
       (multiple-value-bind (events used)
           (qpack-decode-decoder-stream
            context (qpack-encode-section-ack stream-id))
