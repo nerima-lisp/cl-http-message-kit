@@ -1280,9 +1280,20 @@
       (expect (qpack-decode-decoder-stream
                context (qpack-encode-section-ack 1))
               :to-equalp (list (list :section-ack 1)))
-      (signals http-protocol-error
-        (qpack-decode-decoder-stream
-         context (qpack-encode-section-ack 1)))
+      (let ((failure nil)
+            (known-received-count
+              (qpack-context-known-received-count context)))
+        (handler-case
+            (qpack-decode-decoder-stream
+             context (qpack-encode-section-ack 1))
+          (http-protocol-error (condition)
+            (setf failure condition)))
+        (expect (and failure (http-protocol-error-detail failure))
+                :to-equalp
+                (list :qpack-decoder-stream-error
+                      :section-acknowledgment 1))
+        (expect (qpack-context-known-received-count context)
+                :to-be known-received-count))
       (expect (qpack-context-table-capacity context) :to-be 68)
       (expect (qpack-context-table-size context) :to-be 68)
       (expect (qpack-context-dynamic-entry-count context) :to-be 2)
