@@ -65,11 +65,21 @@
           (qpack-decode-header-block wire :context empty-decoder)))))
 
   (it "round trips decoder-stream control instructions"
-    (let ((context (make-qpack-context :huffman nil)))
+    (let* ((context (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 128
+                                        :huffman nil))
+           (headers (list (make-http-header "x" "v"))))
+      (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
+      (let ((wire (qpack-encode-header-block
+                   headers :context context :use-dynamic-p t
+                   :stream-id 7 :huffman nil)))
+        (expect (qpack-decode-header-block
+                 wire :context context :stream-id 7)
+                :to-equalp headers))
       (dolist (spec (list (list (qpack-encode-section-ack 7)
-                                '((:section-ack 7)))
+                                (list (list :section-ack 7)))
                           (list (qpack-encode-stream-cancellation 9)
-                                '((:stream-cancellation 9)))))
+                                (list (list :stream-cancellation 9)))))
         (multiple-value-bind (events used)
             (qpack-decode-decoder-stream context (first spec))
           (expect events :to-equalp (second spec))
@@ -245,18 +255,30 @@
 
   (it "encodes and decodes the 62-bit stream ID maximum"
     (let* ((stream-id (1- (ash 1 62)))
-           (context (make-qpack-context :huffman nil))
-           (instructions
-             (list
-              (list (qpack-encode-section-ack stream-id)
-                    (list (list :section-ack stream-id)))
-              (list (qpack-encode-stream-cancellation stream-id)
-                    (list (list :stream-cancellation stream-id))))))
-      (dolist (spec instructions)
-        (multiple-value-bind (events used)
-            (qpack-decode-decoder-stream context (first spec))
-          (expect events :to-equalp (second spec))
-          (expect used :to-be (length (first spec)))))))
+           (context (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 128
+                                        :huffman nil))
+           (headers (list (make-http-header "x" "v"))))
+      (qpack-encode-insert-with-literal-name context "x" "v" :huffman nil)
+      (let ((wire (qpack-encode-header-block
+                   headers :context context :use-dynamic-p t
+                   :stream-id stream-id :huffman nil)))
+        (expect (qpack-decode-header-block
+                 wire :context context :stream-id stream-id)
+                :to-equalp headers))
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream
+           context (qpack-encode-section-ack stream-id))
+        (expect events :to-equalp (list (list :section-ack stream-id)))
+        (expect used :to-be
+                (length (qpack-encode-section-ack stream-id))))
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream
+           context (qpack-encode-stream-cancellation stream-id))
+        (expect events :to-equalp
+                (list (list :stream-cancellation stream-id)))
+        (expect used :to-be
+                (length (qpack-encode-stream-cancellation stream-id))))))
 
   (it "rejects malformed and out-of-range QPACK integers"
     (let ((context (make-qpack-context :huffman nil)))
