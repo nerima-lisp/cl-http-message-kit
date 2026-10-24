@@ -10,7 +10,7 @@
     };
 
     cl-hpack-codec-kit = {
-      url = "github:nerima-lisp/cl-hpack-codec-kit/v1.1.1";
+      url = "github:nerima-lisp/cl-hpack-codec-kit/v1.1.2";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.cl-weave.follows = "cl-weave";
     };
