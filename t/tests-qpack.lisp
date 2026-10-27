@@ -1443,3 +1443,107 @@
         (expect (qpack-context-table-capacity context) :to-be 0)
         (expect (qpack-context-table-size context) :to-be 0)
         (expect (qpack-context-dynamic-entry-count context) :to-be 0)))))
+
+(describe "QPACK downstream test support"
+  (it "preserves the first dynamic-entry identity when a protected capacity shrink fails"
+    (let* ((context (make-qpack-context :max-table-capacity 68
+                                        :table-capacity 68
+                                        :max-blocked-streams 1
+                                        :huffman nil))
+           (headers (list (make-http-header "y" "b")))
+           (wire nil)
+           (same-first-entry-p nil))
+      (qpack-encode-insert-with-literal-name context "x" "a" :huffman nil)
+      (qpack-encode-insert-with-literal-name context "y" "b" :huffman nil)
+      (multiple-value-bind (prepared-wire transaction)
+          (qpack-prepare-header-block
+           headers :context context :use-dynamic-p t :stream-id 5 :huffman nil)
+        (qpack-commit-encoding transaction)
+        (setf wire prepared-wire))
+      (setf same-first-entry-p
+            (http-message-kit/test-support:make-qpack-first-dynamic-entry-identity-probe
+             context))
+      (signals http-protocol-error
+        (qpack-context-set-capacity context 0))
+      (expect (qpack-context-table-capacity context) :to-be 68)
+      (expect (qpack-context-table-size context) :to-be 68)
+      (expect (qpack-context-dynamic-entry-count context) :to-be 2)
+      (expect (funcall same-first-entry-p) :to-be t)
+      (expect (qpack-decode-header-block wire :context context :stream-id 5)
+              :to-equalp headers)
+      (multiple-value-bind (events used)
+          (qpack-decode-decoder-stream context (octets #x85))
+        (expect events :to-equalp (list (list :section-ack 5)))
+        (expect used :to-be 1))
+      (qpack-encode-insert-with-literal-name context "z" "c" :huffman nil)
+      (expect (funcall same-first-entry-p) :to-be nil)))
+  (it "observes the decoded callback once on resume and restores the decoder after unwind"
+    (let* ((encoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :huffman nil))
+           (decoder (make-qpack-context :max-table-capacity 128
+                                        :table-capacity 0
+                                        :huffman nil))
+           (adapter (qpack-make-http3-decoder-context
+                     decoder :max-blocked-streams 1))
+           (expected-fields (list (cons "x-field" "value")))
+           (capacity-wire (qpack-encode-set-capacity encoder 128))
+           (insert-wire
+             (qpack-encode-insert-with-literal-name
+              encoder "x-field" "value" :huffman nil))
+           (instructions (concatenate '(vector (unsigned-byte 8))
+                                      capacity-wire insert-wire))
+           (wire (octets 2 0 #x80))
+           (serialize-calls 0)
+           (inside-serialize-p nil)
+           (wired-callbacks nil)
+           (observed-fields nil)
+           (observed-inside-serialize-p nil)
+           (acknowledged-streams nil)
+           (decoded
+             (http-message-kit/test-support:call-with-http3-qpack-decoded-callback-observer
+              (lambda ()
+                (let ((blocked
+                        (qpack-decode-http3-field-section
+                         wire adapter 19 :role :trailers
+                         :serialize
+                         (lambda (thunk)
+                           (incf serialize-calls)
+                           (let ((previous inside-serialize-p))
+                             (setf inside-serialize-p t)
+                             (unwind-protect (funcall thunk)
+                               (setf inside-serialize-p previous))))
+                         :on-section-acknowledgment
+                         (lambda (stream-id)
+                           (push stream-id acknowledged-streams)))))
+                  (expect (qpack-blocked-stream-p blocked) :to-be t)
+                  (qpack-decode-encoder-stream decoder instructions)
+                  (expect (qpack-take-ready-streams adapter)
+                          :to-equal (list blocked))
+                  (qpack-resume-blocked-stream blocked)))
+              :on-wired (lambda (callback)
+                          (push callback wired-callbacks))
+              :on-decoded (lambda (fields)
+                            (push fields observed-fields)
+                            (setf observed-inside-serialize-p
+                                  inside-serialize-p)))))
+      (expect decoded :to-equalp expected-fields)
+      (expect serialize-calls :to-be 3)
+      (expect (length wired-callbacks) :to-be 1)
+      (expect (functionp (first wired-callbacks)) :to-be t)
+      (expect observed-fields :to-equalp (list expected-fields))
+      (expect observed-inside-serialize-p :to-be nil)
+      (expect acknowledged-streams :to-equal (list 19))
+      (let ((wiring-after-unwind 0)
+            (static-headers (list (make-http-header "x-restored" "yes"))))
+        (signals simple-error
+          (http-message-kit/test-support:call-with-http3-qpack-decoded-callback-observer
+           (lambda () (error "intentional observer unwind"))
+           :on-wired (lambda (callback)
+                       (when (functionp callback)
+                         (incf wiring-after-unwind)))))
+        (expect (qpack-decode-http3-field-section
+                 (qpack-encode-header-block static-headers :huffman nil)
+                 adapter 21 :role :trailers)
+                :to-equalp (list (cons "x-restored" "yes")))
+        (expect wiring-after-unwind :to-be 0)))))

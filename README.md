@@ -395,6 +395,9 @@ cl-weave run \
 The test ASDF system is loaded by `cl-weave`; `cl-weave` is intentionally not
 a runtime dependency of `cl-http-message-kit`.
 
+`cl-http-message-kit/test-support` is a test-only system whose exported helpers
+are unstable and outside the runtime compatibility contract.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

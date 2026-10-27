@@ -4,7 +4,7 @@
   :description "HTTP message values, HTTP/1 wire codecs, and HTTP/2/3 framing and header compression."
   :author "nerima-lisp"
   :license "MIT"
-  :version "2.0.0"
+  :version "2.0.1"
   :depends-on ("cl-hpack-codec-kit")
   :pathname "src"
   :serial nil
@@ -52,7 +52,7 @@
 
 (asdf:defsystem "cl-http-message-kit/test"
   :description "Tests for cl-http-message-kit."
-  :depends-on ("cl-http-message-kit")
+  :depends-on ("cl-http-message-kit" "cl-http-message-kit/test-support")
   :pathname "t"
   :serial nil
   :components
@@ -74,3 +74,12 @@
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call "HTTP-MESSAGE-KIT/TEST" "RUN-TESTS")))
+
+(asdf:defsystem "cl-http-message-kit/test-support"
+  :description "Unstable test helpers for downstream cl-http-message-kit tests."
+  :depends-on ("cl-http-message-kit")
+  :pathname "test-support"
+  :serial nil
+  :components
+  ((:file "package")
+   (:file "qpack" :depends-on ("package"))))
