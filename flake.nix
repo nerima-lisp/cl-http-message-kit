@@ -77,7 +77,7 @@
         system: pkgs: {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "cl-http-message-kit";
-            version = "2.0.0";
+            version = "2.0.1";
             src = builtins.path {
               path = ./.;
               name = "cl-http-message-kit-source";
@@ -87,7 +87,7 @@
               runHook preInstall
               target="$out/share/common-lisp/source/cl-http-message-kit"
               mkdir -p "$target"
-              cp -r cl-http-message-kit.asd src t "$target"/
+              cp -r cl-http-message-kit.asd src t test-support "$target"/
               ln -s "${
                 cl-hpack-codec-kit.packages.${system}.default
               }/share/common-lisp/source/cl-hpack-codec-kit" \
